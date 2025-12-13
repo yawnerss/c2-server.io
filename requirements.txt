@@ -1,3 +1,8 @@
-Flask==2.3.0
+# requirements.txt
+Flask==2.3.3
 Flask-CORS==4.0.0
-gunicorn==21.2.0
+requests==2.31.0
+colorama==0.4.6
+pillow==10.1.0
+cryptography==41.0.7
+psutil==5.9.6
