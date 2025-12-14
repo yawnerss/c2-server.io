@@ -1,7 +1,18 @@
 Flask==3.0.0
 flask-socketio==5.3.6
-gevent==24.10.3  # Fixed version number
+gevent==25.9.1
 gevent-websocket==0.10.1
 requests==2.31.0
 colorama==0.4.6
-python-dotenv==1.0.0
+cryptography==41.0.7
+psutil==5.9.8
+pyautogui==0.9.54
+pynput==1.7.6
+pillow==10.3.0
+pyperclip==1.8.2
+screeninfo==0.8.1
+wmi==1.5.1
+pywin32==306  # Windows only
+pymongo==4.6.1  # Optional for MongoDB
+redis==5.0.1  # Optional for Redis
+sqlalchemy==2.0.28
