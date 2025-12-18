@@ -1,3 +1,22 @@
+app = "c2-server"
+primary_region = "iad"
+
 [env]
-FLASK_APP = "c2-server.py"
-PORT = "8080"
+  PORT = "8080"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.tcp_checks]]
+    interval = 10000
+    timeout = 2000
+    grace_period = "5s"
