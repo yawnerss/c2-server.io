@@ -1,0 +1,3 @@
+[env]
+FLASK_APP = "c2-server.py"
+PORT = "8080"
