@@ -1,4 +1,4 @@
-app = "c2-server"
+app = "app.py"
 
 [build]
   builder = "heroku/buildpacks:20"
@@ -18,3 +18,4 @@ app = "c2-server"
   interval = 10000
   timeout = 2000
   grace_period = "5s"
+
