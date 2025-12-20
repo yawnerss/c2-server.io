@@ -11,7 +11,8 @@ import os
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional
-
+# Add this line (around line 10-15):
+PORT = int(os.environ.get('PORT', 5000))  # Render uses PORT env variable
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-here')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -622,3 +623,4 @@ if __name__ == '__main__':
     print(f"[⚡] Attacks will run on ALL clients simultaneously\n")
     
     socketio.run(app, host='0.0.0.0', port=PORT, debug=False)
+
