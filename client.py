@@ -434,17 +434,14 @@ class Layer7Client:
         self.server_url = server_url
         self.client_name = client_name or f"{platform.node()}_{platform.system()}"
         
-        # Enhanced SocketIO with keep-alive
+        # Enhanced SocketIO with keep-alive (removed invalid params)
         self.sio = socketio.Client(
             reconnection=True,
             reconnection_attempts=0,  # Infinite
             reconnection_delay=1,
             reconnection_delay_max=5,
             logger=False,
-            engineio_logger=False,
-            # Keep-alive settings
-            ping_interval=25,  # Send ping every 25 seconds
-            ping_timeout=60,   # Wait 60 seconds for pong
+            engineio_logger=False
         )
         
         self.current_attack = None
