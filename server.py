@@ -465,7 +465,7 @@ def start_attack():
         socketio.emit('attack_started', {
             'attack_id': attack_id,
             'attack': asdict(attack)
-        }, broadcast=True)
+        })
         
         return jsonify({
             "success": True,
@@ -491,7 +491,7 @@ def stop_attack():
                 attack.status = "stopped"
                 attack.completed_at = datetime.now()
     
-    socketio.emit('attack_stopped', {'message': 'All attacks stopped'}, broadcast=True)
+    socketio.emit('attack_stopped', {'message': 'All attacks stopped'})
     return jsonify({"success": True, "message": "🛑 All attacks stopped"})
 
 @socketio.on('connect')
@@ -520,7 +520,7 @@ def handle_client_register(data):
     socketio.emit('client_connected', {
         'client': asdict(client),
         'total_clients': len(clients)
-    }, broadcast=True)
+    })
 
 @socketio.on('client_stats')
 def handle_client_stats(data):
@@ -537,7 +537,7 @@ def handle_client_attack_start(data):
         'client_id': client_id,
         'target': data.get('target'),
         'attack_id': data.get('attack_id')
-    }, broadcast=True)
+    })
 
 @socketio.on('attack_progress')
 def handle_attack_progress(data):
@@ -545,7 +545,7 @@ def handle_attack_progress(data):
     socketio.emit('client_attack_progress', {
         'client_id': client_id,
         'progress': data
-    }, broadcast=True)
+    })
 
 @socketio.on('attack_complete')
 def handle_attack_complete(data):
@@ -579,12 +579,12 @@ def handle_attack_complete(data):
                 socketio.emit('attack_completed', {
                     'attack_id': attack_id,
                     'results': attack.results
-                }, broadcast=True)
+                })
     
     socketio.emit('client_attack_complete', {
         'client_id': client_id,
         'results': results
-    }, broadcast=True)
+    })
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -596,7 +596,7 @@ def handle_disconnect():
             socketio.emit('client_disconnected', {
                 'client_id': client_id,
                 'total_clients': len(clients)
-            }, broadcast=True)
+            })
 
 def background_tasks():
     while True:
@@ -612,7 +612,7 @@ def background_tasks():
             socketio.emit('system_stats', {
                 'clients': {'total': total, 'attacking': attacking},
                 'attacks': {'active': active, 'total_requests': total_requests}
-            }, broadcast=True)
+            })
             
             time.sleep(2)
         except:
