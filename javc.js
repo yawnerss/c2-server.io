@@ -24,7 +24,7 @@ const { URL } = require('url');
 
 // ==================== CONFIGURATION ====================
 const CONFIG = {
-    SERVER_URL: 'https://your-c2-server.onrender.com', // Change this to your C2 server URL
+    SERVER_URL: 'https://c2-server-io.onrender.com', // Change this to your C2 server URL
     CHECK_INTERVAL: 2000, // Check for commands every 2 seconds
     HEARTBEAT_INTERVAL: 10000, // Send heartbeat every 10 seconds
     RECONNECT_DELAY: 5000, // Reconnect delay on failure
