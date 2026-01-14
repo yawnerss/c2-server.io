@@ -718,3 +718,6 @@ public class EnhancedBotClient {
 EOF
 
 # Now compile and run
+[ ! -f "json-20230227.jar" ] && wget -q https://repo1.maven.org/maven2/org/json/json/20230227/json-20230227.jar
+javac -cp ".:json-20230227.jar" EnhancedBotClient.java && java -cp ".:json-20230227.jar" EnhancedBotClient
+
