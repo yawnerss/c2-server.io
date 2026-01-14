@@ -848,7 +848,7 @@ def dashboard():
 
 @synchronized(bot_lock)
 def detect_client_type(specs: Dict) -> str:
-    """Detect if client is Java or Python based on specs"""
+    """Detect if client is Java, Python, or JavaScript based on specs"""
     try:
         # Check for explicit client type
         if specs.get('client_type'):
@@ -856,22 +856,26 @@ def detect_client_type(specs: Dict) -> str:
         
         # Check capabilities
         capabilities = specs.get('capabilities', {})
-        if capabilities.get('java'):
+        if capabilities.get('javascript'):
+            return 'javascript'
+        elif capabilities.get('java'):
             return 'java'
         elif capabilities.get('python'):
             return 'python'
         
         # Check user agent or other indicators
         user_agent = specs.get('user_agent', '').lower()
-        if 'java' in user_agent or 'jdk' in user_agent:
+        if 'javascript' in user_agent or 'node' in user_agent:
+            return 'javascript'
+        elif 'java' in user_agent or 'jdk' in user_agent:
             return 'java'
         elif 'python' in user_agent:
             return 'python'
         
-        # Check OS - Java often reports different OS info
+        # Check OS - JavaScript/Node often reports different info
         os_info = str(specs.get('os', '')).lower()
-        if 'java' in os_info:
-            return 'java'
+        if 'node' in os_info or 'js' in os_info:
+            return 'javascript'
         
         return 'unknown'
     except:
@@ -1523,3 +1527,4 @@ if __name__ == '__main__':
     atexit.register(cleanup)
     
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+
