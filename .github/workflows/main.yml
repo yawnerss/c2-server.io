@@ -1,0 +1,167 @@
+name: Create 10 RDP Machines with SSH Access
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-rdp-machines:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+    strategy:
+      matrix:
+        machine: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    name: RDP-Machine-${{ matrix.machine }}
+
+    steps:
+      - name: Configure Core RDP Settings
+        run: |
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          # Disable Network Level Authentication
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          # Remove any existing firewall rule to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          # Allow incoming RDP connections on port 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          # Restart Remote Desktop service
+          Restart-Service -Name TermService -Force
+          
+      - name: Create SSH User and Configure
+        run: |
+          # Install OpenSSH Server if not present
+          $sshFeature = Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH.Server*'
+          if ($sshFeature.State -ne 'Installed') {
+              Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+          }
+          
+          # Start and configure SSH service
+          Start-Service sshd
+          Set-Service -Name sshd -StartupType 'Automatic'
+          
+          # Create SSH user (same as RDP for consistency)
+          $sshPassword = "Ricardo159447!"
+          $securePass = ConvertTo-SecureString $sshPassword -AsPlainText -Force
+          
+          if (-not (Get-LocalUser -Name "SSH_ACCESS" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "SSH_ACCESS" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member "SSH_ACCESS"
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "SSH_ACCESS"
+          }
+          
+          # Allow SSH through firewall
+          New-NetFirewallRule -Name "OpenSSH-Server" -DisplayName "OpenSSH Server" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 2>$null
+          
+      - name: Create RDP User with Secure Password
+        run: |
+          # Only create user if it doesn't already exist
+          $password = "Ricardo159447!${{ matrix.machine }}"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          
+          if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
+              # Create user and add to groups
+              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          } else {
+              # Update password for existing user
+              Set-LocalUser -Name "RDP" -Password $securePass
+          }
+          
+          # Save credentials to GitHub environment
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          echo "SSH_CREDS=User: SSH_ACCESS | Password: $sshPassword" >> $env:GITHUB_ENV
+          
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          
+      - name: Establish Tailscale Connection
+        run: |
+          $hostname = "gh-rdp-machine-${{ matrix.machine }}-$env:GITHUB_RUN_ID"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostname
+          
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          echo "MACHINE_NUMBER=${{ matrix.machine }}" >> $env:GITHUB_ENV
+          
+      - name: Verify Accessibility
+        run: |
+          Write-Host "=== Machine $env:MACHINE_NUMBER ==="
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "Hostname: gh-rdp-machine-$env:MACHINE_NUMBER-$env:GITHUB_RUN_ID"
+          
+          # Test RDP port
+          $rdpTest = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -WarningAction SilentlyContinue
+          if (-not $rdpTest.TcpTestSucceeded) {
+              Write-Warning "RDP connection to port 3389 failed - retrying..."
+              # Add firewall rule again just in case
+              netsh advfirewall firewall add rule name="RDP-Tailscale-retry" dir=in action=allow protocol=TCP localport=3389
+          }
+          
+          # Test SSH port
+          $sshTest = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 22 -WarningAction SilentlyContinue
+          if (-not $sshTest.TcpTestSucceeded) {
+              Write-Warning "SSH connection to port 22 failed"
+              # Restart SSH service
+              Restart-Service sshd -Force
+          }
+          
+          Write-Host "Connectivity tests completed"
+          
+      - name: Display Connection Information
+        run: |
+          Write-Host "`n=========================================="
+          Write-Host "          RDP MACHINE $env:MACHINE_NUMBER"
+          Write-Host "=========================================="
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "Hostname: gh-rdp-machine-$env:MACHINE_NUMBER-$env:GITHUB_RUN_ID"
+          Write-Host ""
+          Write-Host "--- RDP ACCESS ---"
+          Write-Host "Address: $env:TAILSCALE_IP:3389"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS | ForEach-Object { $_ -replace '^.*Password: ','' })"
+          Write-Host ""
+          Write-Host "--- SSH ACCESS ---"
+          Write-Host "Command: ssh SSH_ACCESS@$env:TAILSCALE_IP"
+          Write-Host "Password: $(echo $env:SSH_CREDS | ForEach-Object { $_ -replace '^.*Password: ','' })"
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "Use 'tailscale up --authkey=YOUR_KEY' on client"
+          Write-Host "==========================================`n"
+          
+      - name: Maintain Connection
+        run: |
+          $counter = 0
+          while ($true) {
+              $counter++
+              Write-Host "[$(Get-Date)] Machine $env:MACHINE_NUMBER active for $($counter * 5) minutes"
+              Write-Host "IP: $env:TAILSCALE_IP"
+              Write-Host "SSH: ssh SSH_ACCESS@$env:TAILSCALE_IP"
+              Write-Host "---"
+              
+              # Periodically verify services are running
+              if ($counter % 12 -eq 0) { # Every hour
+                  $rdpStatus = Get-Service TermService | Select-Object Status
+                  $sshStatus = Get-Service sshd | Select-Object Status
+                  Write-Host "Service Status - RDP: $($rdpStatus.Status), SSH: $($sshStatus.Status)"
+              }
+              
+              Start-Sleep -Seconds 300
+          }
