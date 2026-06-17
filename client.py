@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
-Simple HTTP GET Stress Tool
+Simple HTTP GET Stress Tool - Python 2 Compatible
 Pure GET requests with customizable threads
 FOR EDUCATIONAL PURPOSES ONLY - Use on your own servers only!
 """
@@ -8,22 +8,24 @@ FOR EDUCATIONAL PURPOSES ONLY - Use on your own servers only!
 import threading
 import time
 import random
-import requests
-from datetime import datetime
 import sys
 import signal
+import urllib2
+import ssl
 
 # ============================================================
-# CONFIGURATION
+# CONFIGURATION - EDIT THESE
 # ============================================================
 TARGET_URL = "https://usl.edu.ph"
 THREADS = 20
 REQUESTS_PER_THREAD = 100  # 0 = infinite
-DELAY_MIN = 0.1  # Minimum delay between requests (seconds)
-DELAY_MAX = 0.5  # Maximum delay between requests (seconds)
+DELAY_MIN = 0.1
+DELAY_MAX = 0.5
 TIMEOUT = 10
 
-# Statistics
+# ============================================================
+# STATISTICS
+# ============================================================
 stats = {
     'total': 0,
     'success': 0,
@@ -44,10 +46,10 @@ def print_banner():
     print("  SIMPLE HTTP STRESS TOOL")
     print("  Pure GET Requests | Customizable Threads")
     print("=" * 60)
-    print(f"  Target: {TARGET_URL}")
-    print(f"  Threads: {THREADS}")
-    print(f"  Requests per thread: {'Infinite' if REQUESTS_PER_THREAD == 0 else REQUESTS_PER_THREAD}")
-    print(f"  Delay: {DELAY_MIN}s - {DELAY_MAX}s")
+    print("  Target: %s" % TARGET_URL)
+    print("  Threads: %d" % THREADS)
+    print("  Requests per thread: %s" % ('Infinite' if REQUESTS_PER_THREAD == 0 else str(REQUESTS_PER_THREAD)))
+    print("  Delay: %.1fs - %.1fs" % (DELAY_MIN, DELAY_MAX))
     print("=" * 60)
     print("\n[!] Press Ctrl+C to stop\n")
 
@@ -61,14 +63,13 @@ def worker(thread_id):
     """Worker thread function"""
     global stats
     
-    session = requests.Session()
-    session.headers.update({
+    # Create opener with custom headers
+    headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
         'Connection': 'keep-alive'
-    })
+    }
     
     requests_sent = 0
     
@@ -78,33 +79,28 @@ def worker(thread_id):
             break
         
         try:
+            req = urllib2.Request(TARGET_URL, headers=headers)
             start_time = time.time()
-            response = session.get(TARGET_URL, timeout=TIMEOUT)
+            response = urllib2.urlopen(req, timeout=TIMEOUT)
             elapsed = (time.time() - start_time) * 1000  # ms
             
             with stats_lock:
                 stats['total'] += 1
-                if response.status_code in [200, 301, 302]:
+                if response.getcode() in [200, 301, 302]:
                     stats['success'] += 1
                 else:
                     stats['failed'] += 1
                 
-                # Print status every 10 requests
                 if stats['total'] % 10 == 0:
                     print_status()
             
             requests_sent += 1
             
-        except requests.exceptions.Timeout:
+        except urllib2.URLError as e:
             with stats_lock:
                 stats['total'] += 1
                 stats['failed'] += 1
-                stats['errors'].append('Timeout')
-        except requests.exceptions.ConnectionError:
-            with stats_lock:
-                stats['total'] += 1
-                stats['failed'] += 1
-                stats['errors'].append('Connection Error')
+                stats['errors'].append(str(e.reason)[:50])
         except Exception as e:
             with stats_lock:
                 stats['total'] += 1
@@ -116,7 +112,7 @@ def worker(thread_id):
             time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
     
     if stats['running']:
-        print(f"\n[Thread {thread_id}] Completed {requests_sent} requests")
+        print("\n[Thread %d] Completed %d requests" % (thread_id, requests_sent))
 
 def print_status():
     """Print current statistics"""
@@ -127,14 +123,17 @@ def print_status():
     
     elapsed = time.time() - stats['start_time']
     rate = stats['total'] / elapsed if elapsed > 0 else 0
-    success_rate = (stats['success'] / stats['total'] * 100) if stats['total'] > 0 else 0
+    success_rate = (stats['success'] / float(stats['total']) * 100) if stats['total'] > 0 else 0
     
-    print(f"\r[{datetime.now().strftime('%H:%M:%S')}] "
-          f"Total: {stats['total']} | "
-          f"Success: {stats['success']} | "
-          f"Failed: {stats['failed']} | "
-          f"Rate: {rate:.1f}/s | "
-          f"Success: {success_rate:.1f}%", end='')
+    sys.stdout.write("\r[%s] Total: %d | Success: %d | Failed: %d | Rate: %.1f/s | Success: %.1f%%" % (
+        time.strftime('%H:%M:%S'),
+        stats['total'],
+        stats['success'],
+        stats['failed'],
+        rate,
+        success_rate
+    ))
+    sys.stdout.flush()
 
 def main():
     """Main function"""
@@ -154,9 +153,9 @@ def main():
         t = threading.Thread(target=worker, args=(i,))
         threads.append(t)
         t.start()
-        time.sleep(0.05)  # Small delay to prevent startup spike
+        time.sleep(0.05)
     
-    print(f"[*] Started {THREADS} threads at {datetime.now().strftime('%H:%M:%S')}\n")
+    print("[*] Started %d threads at %s\n" % (THREADS, time.strftime('%H:%M:%S')))
     
     # Wait for threads to complete
     for t in threads:
@@ -165,25 +164,24 @@ def main():
     # Final statistics
     elapsed = time.time() - stats['start_time']
     rate = stats['total'] / elapsed if elapsed > 0 else 0
-    success_rate = (stats['success'] / stats['total'] * 100) if stats['total'] > 0 else 0
+    success_rate = (stats['success'] / float(stats['total']) * 100) if stats['total'] > 0 else 0
     
     print("\n\n" + "=" * 60)
     print("  FINAL STATISTICS")
     print("=" * 60)
-    print(f"  Total Requests:  {stats['total']}")
-    print(f"  Successful:      {stats['success']} ({success_rate:.1f}%)")
-    print(f"  Failed:          {stats['failed']} ({100-success_rate:.1f}%)")
-    print(f"  Duration:        {elapsed:.1f}s")
-    print(f"  Average Rate:    {rate:.1f} req/s")
+    print("  Total Requests:  %d" % stats['total'])
+    print("  Successful:      %d (%.1f%%)" % (stats['success'], success_rate))
+    print("  Failed:          %d (%.1f%%)" % (stats['failed'], 100-success_rate))
+    print("  Duration:        %.1fs" % elapsed)
+    print("  Average Rate:    %.1f req/s" % rate)
     
-    # Show errors
     if stats['errors']:
         error_counts = {}
         for err in stats['errors']:
             error_counts[err] = error_counts.get(err, 0) + 1
         print("\n  Errors:")
         for err, count in error_counts.items():
-            print(f"    - {err}: {count}")
+            print("    - %s: %d" % (err, count))
     
     print("=" * 60)
 
