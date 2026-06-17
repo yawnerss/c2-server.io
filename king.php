@@ -24,13 +24,19 @@ $NPM_PATH = '/tmp/node-v18.17.1-linux-x64/bin/npm'; // Update if npm is elsewher
 
 function log_message($message, $type = 'info') {
     $timestamp = date('Y-m-d H:i:s');
-    $prefix = match($type) {
-        'success' => '✅',
-        'error' => '❌',
-        'warning' => '⚠️',
-        'info' => 'ℹ️',
-        default => '•'
-    };
+    
+    // FIXED: Replaced match() with if-else (PHP 7.4 compatible)
+    $prefix = '•';
+    if ($type === 'success') {
+        $prefix = '✅';
+    } elseif ($type === 'error') {
+        $prefix = '❌';
+    } elseif ($type === 'warning') {
+        $prefix = '⚠️';
+    } elseif ($type === 'info') {
+        $prefix = 'ℹ️';
+    }
+    
     echo "[$timestamp] $prefix $message\n";
 }
 
