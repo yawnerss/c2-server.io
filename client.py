@@ -16,8 +16,8 @@ import ssl
 # HARDCODED CONFIGURATION - EDIT THESE
 # ============================================================
 TARGET_URL = "https://usl.edu.ph"  # CHANGE THIS
-THREADS = 20
-REQUESTS_PER_THREAD = 100  # 0 = infinite
+THREADS = 50
+REQUESTS_PER_THREAD = 600  # 0 = infinite
 DELAY_MIN = 0.1
 DELAY_MAX = 0.5
 TIMEOUT = 10
